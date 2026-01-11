@@ -1,0 +1,285 @@
+# Environment files
+.env
+.env.local
+.env.test
+.env.BAK.*
+.env.backup
+
+# roo
+.roo/
+
+# Project-specific directories
+volumes/
+shared/
+neo4j/
+shared-backup/
+repos
+
+# Searxng
+searxng/settings.yml
+searxng/uwsgi*
+
+# Logs
+context_portal/logs/*
+context_portal/.roo/logs/*
+
+# Claude
+.claude
+CLAUDE_MONITOR.md
+CLAUDE.md
+
+# VSCodeCounter
+.VSCodeCounter/
+
+# Scripts folder (private tools)
+.scripts/
+scripts/
+
+# Database files
+*.db
+*.sqlite3
+*.sqlite3-journal
+*.db-journal
+*.db-wal
+*.db-shm
+*.rdb
+*.ldb
+crawler_data.db
+db.sqlite3
+db.sqlite3-journal
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyo
+*.pyc
+
+# C extensions
+*.so
+
+# Distribution / packaging
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg-info
+.installed.cfg
+*.egg
+MANIFEST
+Crawl4AI.egg-info/
+
+# PyInstaller
+*.manifest
+*.spec
+
+# Installer logs
+pip-log.txt
+pip-delete-this-directory.txt
+
+# Unit test / coverage reports
+htmlcov/
+.tox/
+.nox/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+*.py,cover
+.hypothesis/
+.pytest_cache/
+cover/
+
+# Translations
+*.mo
+*.pot
+
+# Django stuff:
+*.log
+local_settings.py
+
+# Flask stuff:
+instance/
+.webassets-cache
+
+# Scrapy stuff:
+.scrapy
+
+# Sphinx documentation
+docs/_build/
+
+# PyBuilder
+.pybuilder/
+target/
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# IPython
+profile_default/
+ipython_config.py
+
+# pdm
+.pdm.toml
+.pdm-python
+.pdm-build/
+
+# PEP 582
+__pypackages__/
+
+# Celery stuff
+celerybeat-schedule
+celerybeat.pid
+
+# SageMath parsed files
+*.sage.py
+
+# Virtual environments
+.env
+venv/
+env/
+ENV/
+.venv
+env.bak/
+venv.bak/
+
+# Spyder project settings
+.spyderproject
+.spyproject
+
+# Rope project settings
+.ropeproject
+
+# mkdocs documentation
+/site
+
+# mypy
+.mypy_cache/
+.dmypy.json
+dmypy.json
+
+# Pyre type checker
+.pyre/
+
+# pytype static type analyzer
+.pytype/
+
+# Cython debug symbols
+cython_debug/
+
+# JavaScript/Node
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.npm
+.yarn-integrity
+package-lock.json
+yarn.lock
+
+# IDE
+.vscode/
+.idea/
+.idea
+*.swp
+*.swo
+*~
+.DS_Store
+**/.DS_Store
+
+# Test directories and files
+.tests/
+.test_pads/
+test_pad.py
+test_pad*.py
+test_env/
+test_scripts/
+tests/**/test_site
+tests/**/reports
+tests/**/benchmark_reports
+
+# Chainlit
+.chainlit/
+docs/examples/.chainlit/
+.chainlit/config.toml
+.chainlit/translations/en-US.json
+
+# Continue development files
+.continue/
+.continuerc.json
+continue.lock
+continue_core.log
+contextProviders/
+continue_workspace/
+.continue-cache/
+continue_config.json
+.continue-temp/
+.continue-logs/
+.continue-downloads/
+.vscode-continue/
+.vscode-continue-cache/
+
+# Codeium
+.codeiumignore
+
+# Temporary directories
+tmp/
+local/
+.files/
+.local
+.data/
+.next/
+.docs/
+.issues/
+.gitboss/
+.codecat/
+.private/
+.prompts/
+todo/
+plans/
+
+# Project-specific files
+requirements0.txt
+a.txt
+todo.md
+todo_executor.md
+tree.md
+git_changes.py
+git_changes.md
+git_issues.py
+git_issues.md
+.lambda_function.py
+ec2*
+combined_output.txt
+
+# Shell scripts
+*.sh
+
+# Environment-specific
+.llm.env
+
+# LinkedIn app debug/samples
+docs/apps/linkdin/debug*/
+docs/apps/linkdin/samples/insights/*
+
+# Documentation data
+docs/**/data
+
+# Build outputs
+*.log
+
+.
+
+.trash
