@@ -16,7 +16,11 @@ from typing import Any
 
 from fastapi import APIRouter, HTTPException
 
-from mindscape_ai.apps.registry import AppRegistryError, discover_apps, normalize_app_roots
+from mindscape_ai.apps.registry import (
+    AppRegistryError,
+    discover_apps,
+    normalize_app_roots,
+)
 
 router = APIRouter(prefix="/apps", tags=["apps"])
 

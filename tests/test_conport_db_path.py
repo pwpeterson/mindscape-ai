@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -51,5 +52,7 @@ def test_resolve_conport_db_path_rejects_invalid_path_type() -> None:
         def __str__(self) -> str:
             raise ValueError("boom")
 
+    bad: Any = BadPath()
+
     with pytest.raises(ConPortDbPathError):
-        resolve_conport_db_path(BadPath())
+        resolve_conport_db_path(bad)

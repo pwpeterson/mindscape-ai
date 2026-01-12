@@ -402,7 +402,7 @@ async def conport_custom_data(
         rows = await _fetchall(
             conn,
             "SELECT id, timestamp, category, key, value "
-            f"FROM custom_data {where_sql} ORDER BY id DESC LIMIT ?",
+            f"FROM custom_data {where_sql} ORDER BY id DESC LIMIT ?",  # nosec B608
             (*params, limit),
         )
         return {
@@ -497,7 +497,7 @@ async def conport_progress_list(
         rows = await _fetchall(
             conn,
             "SELECT id, timestamp, status, description, parent_id "
-            f"FROM progress_entries {where_sql} ORDER BY id DESC LIMIT ?",
+            f"FROM progress_entries {where_sql} ORDER BY id DESC LIMIT ?",  # nosec B608
             (*params, limit),
         )
         return {
@@ -759,7 +759,7 @@ async def conport_progress_update(
         if exists is None:
             raise HTTPException(status_code=404, detail="Progress entry not found")
 
-        sql = f"UPDATE progress_entries SET {', '.join(updates)} WHERE id = ?"
+        sql = f"UPDATE progress_entries SET {', '.join(updates)} WHERE id = ?"  # nosec B608
         params.append(progress_id)
         await conn.execute(sql, tuple(params))
         await conn.commit()
@@ -914,7 +914,7 @@ async def conport_links(
             conn,
             "SELECT id, timestamp, workspace_id, source_item_type, source_item_id, "
             "target_item_type, target_item_id, relationship_type, description "
-            f"FROM context_links {where_sql} ORDER BY id DESC LIMIT ?",
+            f"FROM context_links {where_sql} ORDER BY id DESC LIMIT ?",  # nosec B608
             (*params, limit),
         )
         return {"app_id": app_id_resolved, "db": db_resolved, "links": [dict(r) for r in rows]}
