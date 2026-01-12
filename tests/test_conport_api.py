@@ -65,6 +65,24 @@ def test_conport_db_traversal_rejected() -> None:
     assert resp.status_code == 400
 
 
+def test_conport_db_too_long_rejected() -> None:
+    app = create_app()
+    client = TestClient(app)
+
+    # T017: DoS guardrail for pathological db query param length
+    resp = client.get("/api/v1/conport/now", params={"db": "x" * 5000})
+    assert resp.status_code == 400
+
+
+def test_conport_db_invalid_characters_rejected() -> None:
+    app = create_app()
+    client = TestClient(app)
+
+    # T017: avoid URI/query-string injection attempts in db param
+    resp = client.get("/api/v1/conport/now", params={"db": "context_portal/context.db?mode=rw"})
+    assert resp.status_code == 400
+
+
 def test_progress_patch_write_gated_by_default() -> None:
     app = create_app()
     client = TestClient(app)

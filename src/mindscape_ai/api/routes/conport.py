@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from pathlib import Path
 from typing import Any, Literal
 
@@ -20,9 +21,42 @@ from mindscape_ai.conport import ConPortDbPathError, resolve_conport_db_path
 
 router = APIRouter(prefix="/conport", tags=["conport"])
 
+# Hard limits for untrusted query params (DoS guardrails)
+DB_QUERY_MAX_LEN = 1024
+
+
+def _validate_db_query_param(db_path: str | None) -> None:
+    """Validate the `db` query parameter before attempting path resolution.
+
+    Notes:
+        `resolve_conport_db_path()` already enforces traversal/NUL and workspace constraints.
+        This adds a cheap length guard to prevent pathological inputs.
+    """
+
+    if db_path is None:
+        return
+
+    if len(db_path) > DB_QUERY_MAX_LEN:
+        raise HTTPException(status_code=400, detail="db parameter too long")
+
+    # Strict allowlist of characters to avoid URI/query-string injection attempts.
+    # Expected values are relative paths like: context_portal/context.db
+    if re.fullmatch(r"[A-Za-z0-9_./-]+", db_path) is None:
+        raise HTTPException(status_code=400, detail="Invalid characters in db parameter")
+
 
 def _write_enabled() -> bool:
-    return os.getenv("MINDSCAPE_WORKBENCH_WRITE", "false").strip().lower() in {"1", "true", "yes"}
+    """Whether write endpoints are enabled.
+
+    Fail-closed: unknown values disable writes.
+    """
+
+    raw = os.getenv("MINDSCAPE_WORKBENCH_WRITE", "false").strip().lower()
+    if raw in {"1", "true", "yes"}:
+        return True
+    if raw in {"0", "false", "no", ""}:
+        return False
+    return False
 
 
 def _json_loads_maybe(value: str | None) -> Any:
@@ -67,6 +101,8 @@ async def _table_exists(conn: aiosqlite.Connection, name: str) -> bool:
 async def _open_aiosqlite(
     db_path: str | None, *, read_only: bool
 ) -> tuple[aiosqlite.Connection, str]:
+    _validate_db_query_param(db_path)
+
     try:
         # Make DB resolution CWD-independent by anchoring the workspace-root search
         # to this module’s location (inside the repo).
@@ -408,20 +444,20 @@ async def conport_item(
 ) -> dict[str, Any]:
     """Get an item by type and numeric id."""
 
-    table_map: dict[str, str] = {
-        "decision": "decisions",
-        "progress": "progress_entries",
-        "system_pattern": "system_patterns",
-        "custom_data": "custom_data",
-        "context_link": "context_links",
-        "product_context": "product_context",
-        "active_context": "active_context",
+    sql_by_type: dict[str, str] = {
+        "decision": "SELECT * FROM decisions WHERE id = ?",
+        "progress": "SELECT * FROM progress_entries WHERE id = ?",
+        "system_pattern": "SELECT * FROM system_patterns WHERE id = ?",
+        "custom_data": "SELECT * FROM custom_data WHERE id = ?",
+        "context_link": "SELECT * FROM context_links WHERE id = ?",
+        "product_context": "SELECT * FROM product_context WHERE id = ?",
+        "active_context": "SELECT * FROM active_context WHERE id = ?",
     }
 
     conn, db_resolved = await _open_aiosqlite(db, read_only=True)
     try:
-        table = table_map[type]
-        row = await _fetchone(conn, f"SELECT * FROM {table} WHERE id = ?", (id,))
+        sql = sql_by_type[type]
+        row = await _fetchone(conn, sql, (id,))
         if row is None:
             raise HTTPException(status_code=404, detail="Item not found")
 
