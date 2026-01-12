@@ -68,7 +68,7 @@ async def _stream_events(
     request: _DisconnectAware, *, heartbeat_seconds: int
 ) -> AsyncGenerator[bytes, None]:
     # Let clients know they can reconnect after a delay if disconnected.
-    yield "retry: 10000\n\n".encode("utf-8")
+    yield b"retry: 10000\n\n"
 
     hello = {
         "type": "hello",

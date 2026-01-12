@@ -68,6 +68,17 @@ code:not([class]) {
         /* py-10 px-6 */
     }
 
+    /*
+      Module layouts (Conport/Mem0/Prompts) already provide the outer container and padding.
+      Override `.page-container` inside those shells so main content aligns horizontally
+      with the sidebar (no extra centering/padding).
+    */
+    .module-shell .page-container {
+        max-width: none;
+        margin: 0;
+        padding: 0;
+    }
+
     .page-header {
         margin-bottom: 1.5rem;
         /* mb-6 */

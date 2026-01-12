@@ -129,7 +129,7 @@ mem0:
   # For self-hosted Mem0
   type: "self-hosted"
   # Or for Mem0 Platform: type: "cloud"
-  
+
   # Self-hosted configuration
   config:
     vector_store:
@@ -141,10 +141,10 @@ mem0:
       provider: "openai"
       config:
         model: "gpt-4o-mini"
-  
+
   # Default user ID for memory queries
   default_user_id: "default_user"
-  
+
   # Cloud configuration (if type: "cloud")
   # api_key: "${MEM0_API_KEY}"  # Use environment variable
   # host: "https://api.mem0.ai"

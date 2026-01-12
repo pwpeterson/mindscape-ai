@@ -88,19 +88,12 @@
 </svelte:head>
 
 <main class="page-container">
-    <header class="page-header">
-        <div>
-            <h1 class="page-title">ConPort — Custom Data</h1>
-            <p class="page-subtitle">
-                Browse custom key/value entries (newest first).
-            </p>
-
-            {#if dbResolved}
-                <div class="mt-2 break-all text-xs text-gray-400">
-                    DB: <code>{dbResolved}</code>
-                </div>
-            {/if}
-        </div>
+    <div class="mb-4 flex flex-wrap items-center justify-between gap-3">
+        {#if dbResolved}
+            <div class="break-all text-xs text-gray-400">
+                DB: <code>{dbResolved}</code>
+            </div>
+        {/if}
 
         <button
             onclick={() => refresh()}
@@ -109,7 +102,7 @@
         >
             {loading ? "Loading…" : "Refresh"}
         </button>
-    </header>
+    </div>
 
     <form
         onsubmit={(e) => {

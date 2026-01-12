@@ -61,32 +61,18 @@
 	<title>ConPort • Item</title>
 </svelte:head>
 
-<main
-	style="max-width: 1000px; margin: 0 auto; padding: 24px; font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif;"
->
-	<header style="margin-bottom: 16px;">
-		<h1 style="margin: 0; font-size: 24px;">ConPort — Item</h1>
-		<p style="margin: 6px 0 0; opacity: 0.8;">
-			Generic item detail view (query params: <code
-				>?type=decision&id=1</code
-			>).
-		</p>
-	</header>
-
+<main class="page-container">
 	<form
 		onsubmit={(e) => {
 			e.preventDefault();
 			persistToUrl();
 			void refresh();
 		}}
-		style="display: flex; gap: 10px; flex-wrap: wrap; align-items: end; margin-bottom: 16px;"
+		class="form-row mb-6"
 	>
-		<label style="display: grid; gap: 6px;">
-			<span style="font-size: 12px; opacity: 0.8;">Type</span>
-			<select
-				bind:value={type}
-				style="padding: 8px 10px; border: 1px solid #ccc; border-radius: 8px;"
-			>
+		<label class="field">
+			<span class="field-label">Type</span>
+			<select bind:value={type} class="input">
 				<option value="decision">decision</option>
 				<option value="progress">progress</option>
 				<option value="system_pattern">system_pattern</option>
@@ -97,21 +83,12 @@
 			</select>
 		</label>
 
-		<label style="display: grid; gap: 6px;">
-			<span style="font-size: 12px; opacity: 0.8;">ID</span>
-			<input
-				type="number"
-				min="1"
-				bind:value={id}
-				style="padding: 8px 10px; border: 1px solid #ccc; border-radius: 8px; width: 120px;"
-			/>
+		<label class="field w-[140px]">
+			<span class="field-label">ID</span>
+			<input type="number" min="1" bind:value={id} class="input" />
 		</label>
 
-		<button
-			type="submit"
-			disabled={loading}
-			style="padding: 8px 12px; border: 1px solid #ccc; border-radius: 8px; background: white; cursor: pointer;"
-		>
+		<button type="submit" disabled={loading} class="btn btn-primary">
 			{loading ? "Loading…" : "Load"}
 		</button>
 	</form>
@@ -126,11 +103,9 @@
 	{:else if loading}
 		<p>Loading…</p>
 	{:else if data}
-		<div
-			style="padding: 12px; border: 1px solid #ddd; border-radius: 10px; overflow: auto;"
-		>
+		<div class="card overflow-auto">
 			<pre
-				style="margin: 0; font-size: 12px; line-height: 1.4; white-space: pre-wrap;">{JSON.stringify(
+				class="text-xs leading-relaxed text-gray-200 whitespace-pre-wrap">{JSON.stringify(
 					data,
 					null,
 					2,

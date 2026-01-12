@@ -51,8 +51,17 @@
 
 	function buildQuery(params: Record<string, string>): string {
 		const sp = new URLSearchParams(params);
+
+		const app_id = $page.url.searchParams.get("app_id");
 		const db = $page.url.searchParams.get("db");
-		if (db) sp.set("db", db);
+
+		if (app_id) {
+			sp.set("app_id", app_id);
+			sp.delete("db");
+		} else if (db) {
+			sp.set("db", db);
+		}
+
 		const qs = sp.toString();
 		return qs ? `?${qs}` : "";
 	}
@@ -239,14 +248,16 @@
 		error = null;
 
 		try {
+			const app_id = $page.url.searchParams.get("app_id");
 			const db = $page.url.searchParams.get("db");
 
 			const [dash, list] = await Promise.all([
-				conportDashboard(fetch, { db }),
+				conportDashboard(fetch, { app_id, db }),
 				conportProgressList(fetch, {
 					status: null,
 					parent_id: null,
 					limit: TASK_TREE_LIMIT,
+					app_id,
 					db,
 				}),
 			]);
@@ -270,12 +281,14 @@
 						status: null,
 						parent_id: phase1Id,
 						limit: 500,
+						app_id,
 						db,
 					}),
 					conportProgressList(fetch, {
 						parent_id: phase1Id,
 						description_prefix: "Phase 1:",
 						limit: 50,
+						app_id,
 						db,
 					}),
 				]);
@@ -321,6 +334,7 @@
 					try {
 						const noteResp = await conportProgress(fetch, {
 							id: 1,
+							app_id,
 							db,
 						});
 						const note = (noteResp as ConportProgressResponse)
@@ -375,12 +389,12 @@
 	onMount(() => {
 		void refresh();
 
-		const db = $page.url.searchParams.get("db");
+		// Note: events stream doesn't scope by app_id yet; we keep this connection global.
 		const conn = connectEventsStream(
 			{
 				onHeartbeat: () => maybeAutoRefresh(),
 			},
-			{ db, heartbeat_seconds: 15 },
+			{ heartbeat_seconds: 15 },
 		);
 
 		return () => conn.close();
@@ -392,32 +406,6 @@
 </svelte:head>
 
 <main class="page-container">
-	<header class="page-header">
-		<div>
-			<h1 class="page-title">ConPort — Dashboard</h1>
-			<p class="page-subtitle">High-level rollups for Workbench mode.</p>
-		</div>
-
-		<div class="flex items-center gap-3">
-			{#if data}
-				<div class="text-sm text-gray-200">
-					Graph Health:&nbsp;&nbsp;Links: {data.graph_health
-						.links},&nbsp;&nbsp;Decisions: {data.graph_health
-						.decisions},&nbsp;&nbsp;Custom data: {data.graph_health
-						.custom_data}
-				</div>
-			{/if}
-
-			<button
-				onclick={() => refresh()}
-				disabled={loading}
-				class="btn btn-primary"
-			>
-				{loading ? "Loading…" : "Refresh"}
-			</button>
-		</div>
-	</header>
-
 	{#if error}
 		<div
 			class="rounded-xl border border-red-500/30 bg-red-500/10 p-4 text-red-100"
@@ -432,20 +420,41 @@
 	{:else if data}
 		<section class="grid gap-4 md:grid-cols-1">
 			<div class="card">
-				<h2 class="card-title">
-					{planTitle ?? "Project plan"} — Explorer
-				</h2>
-
-				<div class="mt-3 flex items-center justify-between gap-3">
-					<div class="text-xs text-gray-300/90">
-						Explorer-style outline (collapsible by status).
+				<div class="flex flex-wrap items-start justify-between gap-3">
+					<div>
+						<h2 class="card-title">
+							{planTitle ?? "Project plan"} — Explorer
+						</h2>
+						<div class="mt-2 text-xs text-gray-300/90">
+							Explorer-style outline (collapsible by status).
+						</div>
 					</div>
-					<a
-						href={progressHref()}
-						class="text-xs text-gray-200/80 hover:text-gray-100 hover:underline"
-					>
-						Open Progress
-					</a>
+
+					<div class="flex flex-wrap items-center justify-end gap-3">
+						<a
+							href={progressHref()}
+							class="text-xs text-gray-200/80 hover:text-gray-100 hover:underline"
+						>
+							Open Progress
+						</a>
+
+						{#if data}
+							<div class="text-xs text-gray-200">
+								Graph Health:&nbsp;&nbsp;Links: {data
+									.graph_health.links},&nbsp;&nbsp;Decisions: {data
+									.graph_health.decisions},&nbsp;&nbsp;Custom
+								data: {data.graph_health.custom_data}
+							</div>
+						{/if}
+
+						<button
+							onclick={() => refresh()}
+							disabled={loading}
+							class="btn btn-primary"
+						>
+							{loading ? "Loading…" : "Refresh"}
+						</button>
+					</div>
 				</div>
 
 				{#if panelTree.length === 0}

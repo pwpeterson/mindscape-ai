@@ -101,16 +101,7 @@
 	<title>ConPort • Links</title>
 </svelte:head>
 
-<main
-	style="max-width: 1100px; margin: 0 auto; padding: 24px; font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif;"
->
-	<header style="margin-bottom: 16px;">
-		<h1 style="margin: 0; font-size: 24px;">ConPort — Links</h1>
-		<p style="margin: 6px 0 0; opacity: 0.8;">
-			Workbench view of context links (knowledge graph edges).
-		</p>
-	</header>
-
+<main class="page-container">
 	<form
 		onsubmit={(e) => {
 			e.preventDefault();

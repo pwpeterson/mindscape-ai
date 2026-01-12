@@ -61,35 +61,22 @@
     <title>ConPort • System Patterns</title>
 </svelte:head>
 
-<main
-    style="max-width: 1100px; margin: 0 auto; padding: 24px; font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif;"
->
-    <header
-        style="display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 16px;"
-    >
-        <div>
-            <h1 style="margin: 0; font-size: 24px;">
-                ConPort — System Patterns
-            </h1>
-            <p style="margin: 6px 0 0; opacity: 0.8;">
-                Browse system/coding patterns (newest first).
-            </p>
-            {#if dbResolved}
-                <div
-                    style="margin-top: 6px; font-size: 12px; opacity: 0.7; word-break: break-all;"
-                >
-                    DB: <code>{dbResolved}</code>
-                </div>
-            {/if}
-        </div>
+<main class="page-container">
+    <div class="mb-4 flex flex-wrap items-center justify-between gap-3">
+        {#if dbResolved}
+            <div class="break-all text-xs text-gray-400">
+                DB: <code>{dbResolved}</code>
+            </div>
+        {/if}
+
         <button
             onclick={() => refresh()}
             disabled={loading}
-            style="padding: 8px 12px; border: 1px solid #ccc; border-radius: 8px; background: white; cursor: pointer;"
+            class="btn btn-primary"
         >
             {loading ? "Loading…" : "Refresh"}
         </button>
-    </header>
+    </div>
 
     <form
         onsubmit={(e) => {
@@ -97,24 +84,20 @@
             persistFiltersToUrl();
             void refresh();
         }}
-        style="display: flex; gap: 10px; align-items: end; margin-bottom: 16px; flex-wrap: wrap;"
+        class="form-row mb-6"
     >
-        <label style="display: grid; gap: 6px;">
-            <span style="font-size: 12px; opacity: 0.8;">Limit</span>
+        <label class="field w-[140px]">
+            <span class="field-label">Limit</span>
             <input
                 type="number"
                 min="1"
                 max="500"
                 bind:value={limit}
-                style="padding: 8px 10px; border: 1px solid #ccc; border-radius: 8px; width: 110px;"
+                class="input"
             />
         </label>
 
-        <button
-            type="submit"
-            disabled={loading}
-            style="padding: 8px 12px; border: 1px solid #ccc; border-radius: 8px; background: white; cursor: pointer;"
-        >
+        <button type="submit" disabled={loading} class="btn">
             {loading ? "Loading…" : "Apply"}
         </button>
     </form>

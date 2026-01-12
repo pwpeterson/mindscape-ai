@@ -76,13 +76,6 @@
 </svelte:head>
 
 <main class="page-container">
-	<header class="mb-6">
-		<h1 class="page-title">ConPort — Search</h1>
-		<p class="page-subtitle">
-			Search decisions and custom data (FTS when available).
-		</p>
-	</header>
-
 	<form
 		onsubmit={(e) => {
 			e.preventDefault();

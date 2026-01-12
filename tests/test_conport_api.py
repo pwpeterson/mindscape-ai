@@ -16,6 +16,22 @@ def test_health_ok() -> None:
     assert resp.json() == {"status": "ok"}
 
 
+def test_apps_list_empty_when_not_configured(monkeypatch) -> None:
+    # Fail-closed: no implicit scanning when MINDSCAPE_APP_ROOTS is unset.
+    monkeypatch.delenv("MINDSCAPE_APP_ROOTS", raising=False)
+
+    app = create_app()
+    client = TestClient(app)
+
+    resp = client.get("/api/v1/apps")
+    assert resp.status_code == 200
+
+    payload = resp.json()
+    assert payload["apps"] == []
+    assert payload["source"]["env"] == "MINDSCAPE_APP_ROOTS"
+    assert payload["source"]["configured"] is False
+
+
 def test_conport_now_ok_default_db() -> None:
     app = create_app()
     client = TestClient(app)
@@ -24,6 +40,8 @@ def test_conport_now_ok_default_db() -> None:
     assert resp.status_code == 200
 
     payload = resp.json()
+    assert "app_id" in payload
+    assert payload["app_id"] is None
     assert "db" in payload
     assert "product_context" in payload
     assert "active_context" in payload
@@ -107,6 +125,8 @@ def test_conport_dashboard_ok_default_db() -> None:
     assert resp.status_code == 200
 
     payload = resp.json()
+    assert "app_id" in payload
+    assert payload["app_id"] is None
     assert "db" in payload
     assert "progress" in payload
     assert "graph_health" in payload
@@ -121,6 +141,8 @@ def test_conport_progress_list_ok_default_db() -> None:
     assert resp.status_code == 200
 
     payload = resp.json()
+    assert "app_id" in payload
+    assert payload["app_id"] is None
     assert "db" in payload
     assert "progress_entries" in payload
     assert isinstance(payload["progress_entries"], list)
@@ -134,6 +156,8 @@ def test_conport_links_list_ok_default_db() -> None:
     assert resp.status_code == 200
 
     payload = resp.json()
+    assert "app_id" in payload
+    assert payload["app_id"] is None
     assert "db" in payload
     assert "links" in payload
     assert isinstance(payload["links"], list)
@@ -147,6 +171,8 @@ def test_conport_item_ok_progress_default_db() -> None:
     assert resp.status_code == 200
 
     payload = resp.json()
+    assert "app_id" in payload
+    assert payload["app_id"] is None
     assert payload["type"] == "progress"
     assert "item" in payload
     assert payload["item"]["id"] == 1
@@ -178,3 +204,39 @@ def test_conport_db_traversal_rejected_across_endpoints() -> None:
 
     resp4 = client.get("/api/v1/conport/item", params={"db": bad_db, "type": "progress", "id": 1})
     assert resp4.status_code == 400
+
+
+def test_conport_app_id_validation_rejects_invalid_characters() -> None:
+    app = create_app()
+    client = TestClient(app)
+
+    # app_id should not accept path-like or query-like strings
+    resp = client.get("/api/v1/conport/now", params={"app_id": "bad/app"})
+    assert resp.status_code == 400
+
+
+def test_conport_app_id_unknown_returns_404(monkeypatch) -> None:
+    # Configure app roots to point at THIS repo so registry is configured, but use an unknown app_id.
+    repo_root = Path(__file__).resolve().parents[1]
+    monkeypatch.setenv("MINDSCAPE_APP_ROOTS", str(repo_root))
+
+    app = create_app()
+    client = TestClient(app)
+
+    resp = client.get("/api/v1/conport/now", params={"app_id": "does-not-exist"})
+    assert resp.status_code == 404
+
+
+def test_conport_app_id_ok_when_configured(monkeypatch) -> None:
+    repo_root = Path(__file__).resolve().parents[1]
+    monkeypatch.setenv("MINDSCAPE_APP_ROOTS", str(repo_root))
+
+    app = create_app()
+    client = TestClient(app)
+
+    resp = client.get("/api/v1/conport/now", params={"app_id": "mindscape-ai"})
+    assert resp.status_code == 200
+
+    payload = resp.json()
+    assert payload["app_id"] == "mindscape-ai"
+    assert payload["db"] == "app:mindscape-ai"

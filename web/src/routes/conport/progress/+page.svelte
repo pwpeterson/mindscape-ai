@@ -285,38 +285,26 @@
     <title>ConPort • Progress</title>
 </svelte:head>
 
-<main
-    style="max-width: 1100px; margin: 0 auto; padding: 24px; font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif;"
->
-    <header
-        style="display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 16px;"
-    >
-        <div>
-            <h1 style="margin: 0; font-size: 24px;">ConPort — Progress</h1>
-            <p style="margin: 6px 0 0; opacity: 0.8;">
-                Browse progress entries (newest first).
-            </p>
+<main class="page-container">
+    <div class="mb-4 flex flex-wrap items-center justify-between gap-3">
+        <div class="min-w-0">
             {#if dbResolved}
-                <div
-                    style="margin-top: 6px; font-size: 12px; opacity: 0.7; word-break: break-all;"
-                >
+                <div class="break-all text-xs text-gray-400">
                     DB: <code>{dbResolved}</code>
                 </div>
             {/if}
             {#if linkToast}
-                <div style="margin-top: 6px; font-size: 12px; opacity: 0.85;">
+                <div class="mt-1 text-xs text-gray-300/80">
                     {linkToast}
                 </div>
             {/if}
         </div>
 
-        <div
-            style="display: flex; gap: 8px; align-items: center; flex-wrap: wrap;"
-        >
+        <div class="flex flex-wrap items-center justify-end gap-2">
             <button
                 onclick={() => setStatusAndRefresh("IN_PROGRESS")}
                 disabled={loading}
-                style="padding: 6px 10px; border: 1px solid #ccc; border-radius: 999px; background: white; cursor: pointer; font-size: 12px;"
+                class="btn"
                 title="Filter to IN_PROGRESS"
             >
                 IN_PROGRESS
@@ -324,7 +312,7 @@
             <button
                 onclick={() => setStatusAndRefresh("TODO")}
                 disabled={loading}
-                style="padding: 6px 10px; border: 1px solid #ccc; border-radius: 999px; background: white; cursor: pointer; font-size: 12px;"
+                class="btn"
                 title="Filter to TODO"
             >
                 TODO
@@ -332,7 +320,7 @@
             <button
                 onclick={() => setStatusAndRefresh("DONE")}
                 disabled={loading}
-                style="padding: 6px 10px; border: 1px solid #ccc; border-radius: 999px; background: white; cursor: pointer; font-size: 12px;"
+                class="btn"
                 title="Filter to DONE"
             >
                 DONE
@@ -340,14 +328,14 @@
             <button
                 onclick={() => clearFilters()}
                 disabled={loading}
-                style="padding: 6px 10px; border: 1px solid #ccc; border-radius: 999px; background: white; cursor: pointer; font-size: 12px;"
+                class="btn"
                 title="Clear status/parent_id filters"
             >
                 Clear
             </button>
             <button
                 onclick={() => void copyLink()}
-                style="padding: 6px 10px; border: 1px solid #ccc; border-radius: 999px; background: white; cursor: pointer; font-size: 12px;"
+                class="btn"
                 title="Copy current URL (including filters) to clipboard"
             >
                 Copy link
@@ -358,12 +346,12 @@
                     void refresh();
                 }}
                 disabled={loading}
-                style="padding: 8px 12px; border: 1px solid #ccc; border-radius: 8px; background: white; cursor: pointer;"
+                class="btn btn-primary"
             >
                 {loading ? "Loading…" : "Refresh"}
             </button>
         </div>
-    </header>
+    </div>
 
     <form
         onsubmit={(e) => {

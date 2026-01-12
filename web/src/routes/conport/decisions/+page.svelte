@@ -15,11 +15,19 @@
 
 	let limit = $state<number>(50);
 
-	function withDb(url: string): string {
+	function withScope(url: string): string {
+		const app_id = $page.url.searchParams.get("app_id");
 		const db = $page.url.searchParams.get("db");
-		if (!db) return url;
+
 		const u = new URL(url, "http://local");
-		u.searchParams.set("db", db);
+
+		if (app_id) {
+			u.searchParams.set("app_id", app_id);
+			u.searchParams.delete("db");
+		} else if (db) {
+			u.searchParams.set("db", db);
+		}
+
 		return u.pathname + u.search;
 	}
 
@@ -35,9 +43,15 @@
 		error = null;
 
 		try {
+			const app_id = $page.url.searchParams.get("app_id");
 			const db = $page.url.searchParams.get("db");
+
 			const data: ConportDecisionsListResponse =
-				await conportDecisionsList(fetch, { limit, db });
+				await conportDecisionsList(fetch, {
+					limit,
+					app_id,
+					db,
+				});
 			dbResolved = data.db;
 			decisions = data.decisions;
 		} catch (err) {
@@ -62,19 +76,12 @@
 </svelte:head>
 
 <main class="page-container">
-	<header class="page-header">
-		<div>
-			<h1 class="page-title">ConPort — Decisions</h1>
-			<p class="page-subtitle">
-				Recent decisions from Workbench mode (newest first).
-			</p>
-
-			{#if dbResolved}
-				<div class="mt-2 break-all text-xs text-gray-400">
-					DB: <code>{dbResolved}</code>
-				</div>
-			{/if}
-		</div>
+	<div class="mb-4 flex flex-wrap items-center justify-between gap-3">
+		{#if dbResolved}
+			<div class="break-all text-xs text-gray-400">
+				DB: <code>{dbResolved}</code>
+			</div>
+		{/if}
 
 		<button
 			onclick={() => refresh()}
@@ -83,7 +90,7 @@
 		>
 			{loading ? "Loading…" : "Refresh"}
 		</button>
-	</header>
+	</div>
 
 	<form
 		onsubmit={(e) => {
@@ -128,7 +135,7 @@
 				<li class="rounded-xl border border-white/10 bg-white/5 p-4">
 					<div class="font-medium text-gray-100">
 						<a
-							href={withDb(
+							href={withScope(
 								`/conport/item?type=decision&id=${d.id}`,
 							)}
 							class="hover:underline underline-offset-2"

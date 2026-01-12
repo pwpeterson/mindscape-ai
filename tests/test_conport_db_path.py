@@ -4,7 +4,11 @@ from pathlib import Path
 
 import pytest
 
-from mindscape_ai.conport.db import ConPortDbPathError, find_workspace_root, resolve_conport_db_path
+from mindscape_ai.conport.db import (
+    ConPortDbPathError,
+    find_workspace_root,
+    resolve_conport_db_path,
+)
 
 
 def test_find_workspace_root_from_repo_root() -> None:

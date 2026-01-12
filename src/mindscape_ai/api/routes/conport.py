@@ -11,18 +11,25 @@ from __future__ import annotations
 import json
 import os
 import re
+from functools import lru_cache
 from pathlib import Path
 from typing import Any, Literal
 
 import aiosqlite
 from fastapi import APIRouter, Body, HTTPException, Query
 
+from mindscape_ai.apps.registry import (
+    AppRegistryError,
+    discover_apps,
+    normalize_app_roots,
+)
 from mindscape_ai.conport import ConPortDbPathError, resolve_conport_db_path
 
 router = APIRouter(prefix="/conport", tags=["conport"])
 
 # Hard limits for untrusted query params (DoS guardrails)
 DB_QUERY_MAX_LEN = 1024
+APP_ID_QUERY_MAX_LEN = 200
 
 
 def _validate_db_query_param(db_path: str | None) -> None:
@@ -43,6 +50,23 @@ def _validate_db_query_param(db_path: str | None) -> None:
     # Expected values are relative paths like: context_portal/context.db
     if re.fullmatch(r"[A-Za-z0-9_./-]+", db_path) is None:
         raise HTTPException(status_code=400, detail="Invalid characters in db parameter")
+
+
+def _validate_app_id_query_param(app_id: str | None) -> None:
+    """Validate the `app_id` query parameter.
+
+    `app_id` is not a filesystem path. It should match `[project].name` from the target
+    app's pyproject.toml.
+    """
+    if app_id is None:
+        return
+
+    if len(app_id) > APP_ID_QUERY_MAX_LEN:
+        raise HTTPException(status_code=400, detail="app_id parameter too long")
+
+    # Allow typical package/project names: letters, digits, underscore, dash, dot.
+    if re.fullmatch(r"[A-Za-z0-9_.-]+", app_id) is None:
+        raise HTTPException(status_code=400, detail="Invalid characters in app_id parameter")
 
 
 def _write_enabled() -> bool:
@@ -98,17 +122,86 @@ async def _table_exists(conn: aiosqlite.Connection, name: str) -> bool:
     return row is not None
 
 
-async def _open_aiosqlite(
-    db_path: str | None, *, read_only: bool
-) -> tuple[aiosqlite.Connection, str]:
-    _validate_db_query_param(db_path)
+@lru_cache(maxsize=8)
+def _apps_by_id_for_env(app_roots_env: str) -> dict[str, Path]:
+    """Build an `app_id -> conport_db_path` mapping for a specific env value.
 
+    Notes:
+        This function is cached *by* the raw env string so changes to
+        MINDSCAPE_APP_ROOTS are reflected without restarting the process.
+    """
+    raw = app_roots_env.strip()
+    if not raw:
+        return {}
+
+    roots_raw = [p.strip() for p in raw.split(",") if p.strip()]
+    roots = normalize_app_roots([Path(p) for p in roots_raw])
+    apps = discover_apps(roots)
+
+    out: dict[str, Path] = {}
+    for app in apps:
+        if app.conport_db_path is None:
+            continue
+        out[app.app_id] = app.conport_db_path
+    return out
+
+
+def _apps_by_id() -> dict[str, Path]:
+    """Build an `app_id -> conport_db_path` mapping from MINDSCAPE_APP_ROOTS.
+
+    Notes:
+        - Fail-closed: if env is not configured, mapping is empty.
+        - Does not expose filesystem paths to clients; only used internally.
+    """
+    return _apps_by_id_for_env(os.getenv("MINDSCAPE_APP_ROOTS", ""))
+
+
+def _resolve_conport_db_from_app_id(app_id: str) -> Path:
+    """Resolve app_id -> conport db path using the registry mapping."""
     try:
-        # Make DB resolution CWD-independent by anchoring the workspace-root search
-        # to this module’s location (inside the repo).
-        resolved = resolve_conport_db_path(db_path, start=Path(__file__))
-    except ConPortDbPathError as exc:
+        mapping = _apps_by_id()
+    except AppRegistryError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    if not mapping:
+        raise HTTPException(
+            status_code=400,
+            detail="App registry is not configured (set MINDSCAPE_APP_ROOTS).",
+        )
+
+    if app_id not in mapping:
+        raise HTTPException(status_code=404, detail=f"Unknown app_id: {app_id}")
+
+    resolved = mapping[app_id].resolve()
+    if resolved.suffix.lower() != ".db":
+        raise HTTPException(status_code=400, detail="Resolved ConPort DB must end with '.db'.")
+    if not resolved.exists() or not resolved.is_file():
+        raise HTTPException(status_code=404, detail="Resolved ConPort DB not found.")
+    return resolved
+
+
+async def _open_aiosqlite(
+    db_path: str | None, *, app_id: str | None, read_only: bool
+) -> tuple[aiosqlite.Connection, str, str | None]:
+    """Open an aiosqlite connection for ConPort.
+
+    Resolution precedence:
+    1) app_id (multi-app mode) -> DB via registry (MINDSCAPE_APP_ROOTS)
+    2) db query param (legacy/workbench) -> DB via resolve_conport_db_path()
+    """
+    _validate_app_id_query_param(app_id)
+    if app_id is not None:
+        resolved = _resolve_conport_db_from_app_id(app_id)
+        display = f"app:{app_id}"
+    else:
+        _validate_db_query_param(db_path)
+        try:
+            # Make DB resolution CWD-independent by anchoring the workspace-root search
+            # to this module’s location (inside the repo).
+            resolved = resolve_conport_db_path(db_path, start=Path(__file__))
+        except ConPortDbPathError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        display = str(resolved)
 
     mode = "ro" if read_only else "rw"
     uri = f"file:{resolved.as_posix()}?mode={mode}"
@@ -120,14 +213,17 @@ async def _open_aiosqlite(
 
     conn.row_factory = aiosqlite.Row
 
-    return conn, str(resolved)
+    return conn, display, app_id
 
 
 @router.get("/now")
-async def conport_now(db: str | None = Query(default=None)) -> dict[str, Any]:
+async def conport_now(
+    app_id: str | None = Query(default=None),
+    db: str | None = Query(default=None),
+) -> dict[str, Any]:
     """Return product_context, active_context, and recent_activity."""
 
-    conn, db_resolved = await _open_aiosqlite(db, read_only=True)
+    conn, db_resolved, app_id_resolved = await _open_aiosqlite(db, app_id=app_id, read_only=True)
     try:
         pc_row = await _fetchone(conn, "SELECT content FROM product_context WHERE id = 1")
         ac_row = await _fetchone(conn, "SELECT content FROM active_context WHERE id = 1")
@@ -160,6 +256,7 @@ async def conport_now(db: str | None = Query(default=None)) -> dict[str, Any]:
         )
 
         return {
+            "app_id": app_id_resolved,
             "db": db_resolved,
             "product_context": _json_loads_maybe(pc_row[0] if pc_row else "{}"),
             "active_context": _json_loads_maybe(ac_row[0] if ac_row else "{}"),
@@ -213,10 +310,13 @@ async def conport_now(db: str | None = Query(default=None)) -> dict[str, Any]:
 
 
 @router.get("/dashboard")
-async def conport_dashboard(db: str | None = Query(default=None)) -> dict[str, Any]:
+async def conport_dashboard(
+    app_id: str | None = Query(default=None),
+    db: str | None = Query(default=None),
+) -> dict[str, Any]:
     """Return progress rollups and basic knowledge graph health."""
 
-    conn, db_resolved = await _open_aiosqlite(db, read_only=True)
+    conn, db_resolved, app_id_resolved = await _open_aiosqlite(db, app_id=app_id, read_only=True)
     try:
         status_rows = await _fetchall(
             conn, "SELECT status, COUNT(*) AS count FROM progress_entries GROUP BY status"
@@ -228,6 +328,7 @@ async def conport_dashboard(db: str | None = Query(default=None)) -> dict[str, A
         custom_count = await _fetchone(conn, "SELECT COUNT(*) AS count FROM custom_data")
 
         return {
+            "app_id": app_id_resolved,
             "db": db_resolved,
             "progress": {"by_status": progress_rollup},
             "graph_health": {
@@ -243,10 +344,11 @@ async def conport_dashboard(db: str | None = Query(default=None)) -> dict[str, A
 @router.get("/decisions")
 async def conport_decisions(
     limit: int = Query(default=50, ge=1, le=500),
+    app_id: str | None = Query(default=None),
     db: str | None = Query(default=None),
 ) -> dict[str, Any]:
     """List decisions (newest first)."""
-    conn, db_resolved = await _open_aiosqlite(db, read_only=True)
+    conn, db_resolved, app_id_resolved = await _open_aiosqlite(db, app_id=app_id, read_only=True)
     try:
         rows = await _fetchall(
             conn,
@@ -255,6 +357,7 @@ async def conport_decisions(
             (limit,),
         )
         return {
+            "app_id": app_id_resolved,
             "db": db_resolved,
             "decisions": [
                 {
@@ -277,10 +380,11 @@ async def conport_custom_data(
     category: str | None = Query(default=None),
     key: str | None = Query(default=None),
     limit: int = Query(default=50, ge=1, le=500),
+    app_id: str | None = Query(default=None),
     db: str | None = Query(default=None),
 ) -> dict[str, Any]:
     """List custom_data records (newest first), with optional category/key filters."""
-    conn, db_resolved = await _open_aiosqlite(db, read_only=True)
+    conn, db_resolved, app_id_resolved = await _open_aiosqlite(db, app_id=app_id, read_only=True)
     try:
         where: list[str] = []
         params: list[Any] = []
@@ -302,6 +406,7 @@ async def conport_custom_data(
             (*params, limit),
         )
         return {
+            "app_id": app_id_resolved,
             "db": db_resolved,
             "custom_data": [
                 {
@@ -321,10 +426,11 @@ async def conport_custom_data(
 @router.get("/system-patterns")
 async def conport_system_patterns(
     limit: int = Query(default=50, ge=1, le=500),
+    app_id: str | None = Query(default=None),
     db: str | None = Query(default=None),
 ) -> dict[str, Any]:
     """List system patterns (newest first)."""
-    conn, db_resolved = await _open_aiosqlite(db, read_only=True)
+    conn, db_resolved, app_id_resolved = await _open_aiosqlite(db, app_id=app_id, read_only=True)
     try:
         rows = await _fetchall(
             conn,
@@ -333,6 +439,7 @@ async def conport_system_patterns(
             (limit,),
         )
         return {
+            "app_id": app_id_resolved,
             "db": db_resolved,
             "system_patterns": [
                 {
@@ -355,6 +462,7 @@ async def conport_progress_list(
     parent_id: int | None = Query(default=None, ge=1),
     description_prefix: str | None = Query(default=None, min_length=1, max_length=200),
     limit: int = Query(default=50, ge=1, le=500),
+    app_id: str | None = Query(default=None),
     db: str | None = Query(default=None),
 ) -> dict[str, Any]:
     """List progress entries (newest first), with optional filters.
@@ -364,7 +472,7 @@ async def conport_progress_list(
     - parent_id: exact match
     - description_prefix: case-insensitive prefix match (e.g. "Phase 1:")
     """
-    conn, db_resolved = await _open_aiosqlite(db, read_only=True)
+    conn, db_resolved, app_id_resolved = await _open_aiosqlite(db, app_id=app_id, read_only=True)
     try:
         where: list[str] = []
         params: list[Any] = []
@@ -392,7 +500,11 @@ async def conport_progress_list(
             f"FROM progress_entries {where_sql} ORDER BY id DESC LIMIT ?",
             (*params, limit),
         )
-        return {"db": db_resolved, "progress_entries": [dict(r) for r in rows]}
+        return {
+            "app_id": app_id_resolved,
+            "db": db_resolved,
+            "progress_entries": [dict(r) for r in rows],
+        }
     finally:
         await conn.close()
 
@@ -400,10 +512,11 @@ async def conport_progress_list(
 @router.get("/views")
 async def conport_views_list(
     limit: int = Query(default=50, ge=1, le=500),
+    app_id: str | None = Query(default=None),
     db: str | None = Query(default=None),
 ) -> dict[str, Any]:
     """List saved workbench views stored in custom_data(category='workbench_views')."""
-    conn, db_resolved = await _open_aiosqlite(db, read_only=True)
+    conn, db_resolved, app_id_resolved = await _open_aiosqlite(db, app_id=app_id, read_only=True)
     try:
         rows = await _fetchall(
             conn,
@@ -412,6 +525,7 @@ async def conport_views_list(
             ("workbench_views", limit),
         )
         return {
+            "app_id": app_id_resolved,
             "db": db_resolved,
             "views": [
                 {
@@ -440,6 +554,7 @@ async def conport_item(
         "active_context",
     ] = Query(...),
     id: int = Query(..., ge=1),
+    app_id: str | None = Query(default=None),
     db: str | None = Query(default=None),
 ) -> dict[str, Any]:
     """Get an item by type and numeric id."""
@@ -454,7 +569,7 @@ async def conport_item(
         "active_context": "SELECT * FROM active_context WHERE id = ?",
     }
 
-    conn, db_resolved = await _open_aiosqlite(db, read_only=True)
+    conn, db_resolved, app_id_resolved = await _open_aiosqlite(db, app_id=app_id, read_only=True)
     try:
         sql = sql_by_type[type]
         row = await _fetchone(conn, sql, (id,))
@@ -469,7 +584,7 @@ async def conport_item(
         if type in {"decision", "system_pattern"}:
             data["tags"] = _json_loads_maybe(data.get("tags"))
 
-        return {"db": db_resolved, "type": type, "item": data}
+        return {"app_id": app_id_resolved, "db": db_resolved, "type": type, "item": data}
     finally:
         await conn.close()
 
@@ -478,6 +593,7 @@ async def conport_item(
 async def conport_search(
     q: str = Query(..., min_length=1),
     limit: int = Query(default=10, ge=1, le=100),
+    app_id: str | None = Query(default=None),
     db: str | None = Query(default=None),
 ) -> dict[str, Any]:
     """Search decisions/custom_data.
@@ -486,7 +602,7 @@ async def conport_search(
     Falls back to LIKE search when FTS is unavailable.
     """
 
-    conn, db_resolved = await _open_aiosqlite(db, read_only=True)
+    conn, db_resolved, app_id_resolved = await _open_aiosqlite(db, app_id=app_id, read_only=True)
     try:
         has_decisions_fts = await _table_exists(conn, "decisions_fts")
         has_custom_fts = await _table_exists(conn, "custom_data_fts")
@@ -560,6 +676,7 @@ async def conport_search(
         ]
 
         return {
+            "app_id": app_id_resolved,
             "db": db_resolved,
             "query": q,
             "fts": {"decisions": has_decisions_fts, "custom_data": has_custom_fts},
@@ -571,9 +688,11 @@ async def conport_search(
 
 @router.get("/progress/{progress_id}")
 async def conport_progress(
-    progress_id: int, db: str | None = Query(default=None)
+    progress_id: int,
+    app_id: str | None = Query(default=None),
+    db: str | None = Query(default=None),
 ) -> dict[str, Any]:
-    conn, db_resolved = await _open_aiosqlite(db, read_only=True)
+    conn, db_resolved, app_id_resolved = await _open_aiosqlite(db, app_id=app_id, read_only=True)
     try:
         row = await _fetchone(
             conn,
@@ -583,7 +702,7 @@ async def conport_progress(
         )
         if row is None:
             raise HTTPException(status_code=404, detail="Progress entry not found")
-        return {"db": db_resolved, "progress": dict(row)}
+        return {"app_id": app_id_resolved, "db": db_resolved, "progress": dict(row)}
     finally:
         await conn.close()
 
@@ -592,6 +711,7 @@ async def conport_progress(
 async def conport_progress_update(
     progress_id: int,
     payload: dict[str, Any] = Body(default_factory=dict),
+    app_id: str | None = Query(default=None),
     db: str | None = Query(default=None),
 ) -> dict[str, Any]:
     if not _write_enabled():
@@ -630,7 +750,7 @@ async def conport_progress_update(
     if not updates:
         raise HTTPException(status_code=400, detail="No updates provided")
 
-    conn, db_resolved = await _open_aiosqlite(db, read_only=False)
+    conn, db_resolved, app_id_resolved = await _open_aiosqlite(db, app_id=app_id, read_only=False)
     try:
         # Ensure exists
         exists = await _fetchone(
@@ -650,14 +770,22 @@ async def conport_progress_update(
             "FROM progress_entries WHERE id = ?",
             (progress_id,),
         )
-        return {"db": db_resolved, "progress": dict(row) if row else None}
+        return {
+            "app_id": app_id_resolved,
+            "db": db_resolved,
+            "progress": dict(row) if row else None,
+        }
     finally:
         await conn.close()
 
 
 @router.get("/views/{view_key}")
-async def conport_get_view(view_key: str, db: str | None = Query(default=None)) -> dict[str, Any]:
-    conn, db_resolved = await _open_aiosqlite(db, read_only=True)
+async def conport_get_view(
+    view_key: str,
+    app_id: str | None = Query(default=None),
+    db: str | None = Query(default=None),
+) -> dict[str, Any]:
+    conn, db_resolved, app_id_resolved = await _open_aiosqlite(db, app_id=app_id, read_only=True)
     try:
         row = await _fetchone(
             conn,
@@ -669,7 +797,7 @@ async def conport_get_view(view_key: str, db: str | None = Query(default=None)) 
             raise HTTPException(status_code=404, detail="View not found")
         data = dict(row)
         data["value"] = _json_loads_maybe(data.get("value"))
-        return {"db": db_resolved, "view": data}
+        return {"app_id": app_id_resolved, "db": db_resolved, "view": data}
     finally:
         await conn.close()
 
@@ -678,6 +806,7 @@ async def conport_get_view(view_key: str, db: str | None = Query(default=None)) 
 async def conport_put_view(
     view_key: str,
     value: Any = Body(...),
+    app_id: str | None = Query(default=None),
     db: str | None = Query(default=None),
 ) -> dict[str, Any]:
     if not _write_enabled():
@@ -692,7 +821,7 @@ async def conport_put_view(
     # Store as JSON when possible.
     value_text = json.dumps(value, ensure_ascii=False)
 
-    conn, db_resolved = await _open_aiosqlite(db, read_only=False)
+    conn, db_resolved, app_id_resolved = await _open_aiosqlite(db, app_id=app_id, read_only=False)
     try:
         await conn.execute(
             "INSERT INTO custom_data (timestamp, category, key, value) "
@@ -719,14 +848,16 @@ async def conport_put_view(
             }
         )
         data["value"] = _json_loads_maybe(data.get("value"))
-        return {"db": db_resolved, "view": data}
+        return {"app_id": app_id_resolved, "db": db_resolved, "view": data}
     finally:
         await conn.close()
 
 
 @router.delete("/views/{view_key}")
 async def conport_delete_view(
-    view_key: str, db: str | None = Query(default=None)
+    view_key: str,
+    app_id: str | None = Query(default=None),
+    db: str | None = Query(default=None),
 ) -> dict[str, Any]:
     if not _write_enabled():
         raise HTTPException(
@@ -737,14 +868,14 @@ async def conport_delete_view(
             ),
         )
 
-    conn, db_resolved = await _open_aiosqlite(db, read_only=False)
+    conn, db_resolved, app_id_resolved = await _open_aiosqlite(db, app_id=app_id, read_only=False)
     try:
         cur = await conn.execute(
             "DELETE FROM custom_data WHERE category = ? AND key = ?",
             ("workbench_views", view_key),
         )
         await conn.commit()
-        return {"db": db_resolved, "deleted": int(cur.rowcount)}
+        return {"app_id": app_id_resolved, "db": db_resolved, "deleted": int(cur.rowcount)}
     finally:
         await conn.close()
 
@@ -756,9 +887,10 @@ async def conport_links(
     target_item_type: str | None = Query(default=None),
     target_item_id: str | None = Query(default=None),
     limit: int = Query(default=50, ge=1, le=500),
+    app_id: str | None = Query(default=None),
     db: str | None = Query(default=None),
 ) -> dict[str, Any]:
-    conn, db_resolved = await _open_aiosqlite(db, read_only=True)
+    conn, db_resolved, app_id_resolved = await _open_aiosqlite(db, app_id=app_id, read_only=True)
     try:
         where: list[str] = []
         params: list[Any] = []
@@ -785,7 +917,7 @@ async def conport_links(
             f"FROM context_links {where_sql} ORDER BY id DESC LIMIT ?",
             (*params, limit),
         )
-        return {"db": db_resolved, "links": [dict(r) for r in rows]}
+        return {"app_id": app_id_resolved, "db": db_resolved, "links": [dict(r) for r in rows]}
     finally:
         await conn.close()
 
@@ -793,6 +925,7 @@ async def conport_links(
 @router.post("/links")
 async def conport_links_create(
     payload: dict[str, Any] = Body(...),
+    app_id: str | None = Query(default=None),
     db: str | None = Query(default=None),
 ) -> dict[str, Any]:
     if not _write_enabled():
@@ -816,7 +949,7 @@ async def conport_links_create(
     if missing:
         raise HTTPException(status_code=400, detail=f"Missing fields: {', '.join(missing)}")
 
-    conn, db_resolved = await _open_aiosqlite(db, read_only=False)
+    conn, db_resolved, app_id_resolved = await _open_aiosqlite(db, app_id=app_id, read_only=False)
     try:
         await conn.execute(
             "INSERT INTO context_links (workspace_id, source_item_type, source_item_id, "
@@ -841,7 +974,11 @@ async def conport_links_create(
             "SELECT * FROM context_links WHERE id = ?",
             (link_id,),
         )
-        return {"db": db_resolved, "link": dict(created) if created else None}
+        return {
+            "app_id": app_id_resolved,
+            "db": db_resolved,
+            "link": dict(created) if created else None,
+        }
     finally:
         await conn.close()
 
@@ -849,6 +986,7 @@ async def conport_links_create(
 @router.delete("/links")
 async def conport_links_delete(
     id: int = Query(..., ge=1),
+    app_id: str | None = Query(default=None),
     db: str | None = Query(default=None),
 ) -> dict[str, Any]:
     if not _write_enabled():
@@ -860,10 +998,10 @@ async def conport_links_delete(
             ),
         )
 
-    conn, db_resolved = await _open_aiosqlite(db, read_only=False)
+    conn, db_resolved, app_id_resolved = await _open_aiosqlite(db, app_id=app_id, read_only=False)
     try:
         cur = await conn.execute("DELETE FROM context_links WHERE id = ?", (id,))
         await conn.commit()
-        return {"db": db_resolved, "deleted": int(cur.rowcount)}
+        return {"app_id": app_id_resolved, "db": db_resolved, "deleted": int(cur.rowcount)}
     finally:
         await conn.close()

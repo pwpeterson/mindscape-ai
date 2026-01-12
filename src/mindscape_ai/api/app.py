@@ -12,6 +12,7 @@ from fastapi import APIRouter, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from loguru import logger
 
+from mindscape_ai.api.routes.apps import router as apps_router
 from mindscape_ai.api.routes.conport import router as conport_router
 from mindscape_ai.api.routes.events import router as events_router
 
@@ -52,6 +53,7 @@ def create_app() -> FastAPI:
     def health() -> dict[str, str]:
         return {"status": "ok"}
 
+    api.include_router(apps_router)
     api.include_router(conport_router)
     api.include_router(events_router)
     app.include_router(api)

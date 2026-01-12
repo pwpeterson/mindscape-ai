@@ -35,8 +35,17 @@
 
 	function buildQuery(params: Record<string, string>): string {
 		const sp = new URLSearchParams(params);
+
+		const app_id = $page.url.searchParams.get("app_id");
 		const db = $page.url.searchParams.get("db");
-		if (db) sp.set("db", db);
+
+		if (app_id) {
+			sp.set("app_id", app_id);
+			sp.delete("db");
+		} else if (db) {
+			sp.set("db", db);
+		}
+
 		const qs = sp.toString();
 		return qs ? `?${qs}` : "";
 	}
@@ -59,27 +68,31 @@
 		error = null;
 
 		try {
+			const app_id = $page.url.searchParams.get("app_id");
 			const db = $page.url.searchParams.get("db");
 
 			const [nowResp, todoResp, inProgressResp, doneResp] =
 				await Promise.all([
-					conportNow(fetch, { db }),
+					conportNow(fetch, { app_id, db }),
 					conportProgressList(fetch, {
 						status: "TODO",
 						parent_id: null,
 						limit: PANEL_LIMIT,
+						app_id,
 						db,
 					}),
 					conportProgressList(fetch, {
 						status: "IN_PROGRESS",
 						parent_id: null,
 						limit: PANEL_LIMIT,
+						app_id,
 						db,
 					}),
 					conportProgressList(fetch, {
 						status: "DONE",
 						parent_id: null,
 						limit: PANEL_LIMIT,
+						app_id,
 						db,
 					}),
 				]);
@@ -102,12 +115,12 @@
 		void refresh();
 
 		// Browser-only: subscribe to SSE and refresh on heartbeats.
-		const db = $page.url.searchParams.get("db");
+		// Note: events stream doesn't scope by app_id yet; we keep this connection global.
 		const conn = connectEventsStream(
 			{
 				onHeartbeat: () => maybeAutoRefresh(),
 			},
-			{ db, heartbeat_seconds: 15 },
+			{ heartbeat_seconds: 15 },
 		);
 
 		return () => conn.close();
@@ -119,14 +132,7 @@
 </svelte:head>
 
 <main class="page-container">
-	<header class="page-header">
-		<div>
-			<h1 class="page-title">ConPort — Now</h1>
-			<p class="page-subtitle">
-				Workbench snapshot from your local ConPort SQLite DB.
-			</p>
-		</div>
-
+	<div class="mb-4 flex items-center justify-end gap-3">
 		<button
 			onclick={() => refresh()}
 			disabled={loading}
@@ -134,7 +140,7 @@
 		>
 			{loading ? "Loading…" : "Refresh"}
 		</button>
-	</header>
+	</div>
 
 	{#if error}
 		<div
