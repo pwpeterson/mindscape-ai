@@ -54,6 +54,7 @@ web = [
     "fastapi>=0.112.0",
     "uvicorn[standard]>=0.30.0",
     "httpx>=0.28.1",
+    "aiosqlite>=0.20.0",
 ]
 
 # Database support
@@ -110,8 +111,18 @@ target-version = ["py310"]
 [tool.ruff]
 line-length = 100
 target-version = "py310"
+extend-exclude = [
+    "context_portal/alembic",
+    "modules",
+    "utils",
+]
+
+[tool.ruff.lint]
 select = ["E", "F", "I", "N", "W", "UP", "B", "C4", "SIM"]
 ignore = []
+
+[tool.ruff.lint.per-file-ignores]
+"src/mindscape_ai/api/routes/*.py" = ["B008"]
 
 [tool.mypy]
 python_version = "3.10"

@@ -60,7 +60,7 @@ Think of it as an instrumentation panel for AI context—essential for debugging
 
 ### Mem0 Integration
 
-- Display user memories with relevance scores
+- Display user, project and app memories with relevance scores
 - Search memories semantically
 - Support for multiple user contexts
 - Memory CRUD operations

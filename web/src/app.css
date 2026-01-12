@@ -1,0 +1,292 @@
+/* Tailwind v4 entrypoint */
+@import "tailwindcss";
+
+@config "../tailwind.config.js";
+@source "./**/*.{html,js,svelte,ts}";
+
+/*
+  Safe defaults for dark UI:
+
+  - Set baseline page colors so content is readable even if Tailwind utilities
+    aren’t applied for any reason.
+  - Style ONLY “unstyled” anchors (no class attr) to avoid overriding Tailwind
+    utility classes used by the nav.
+*/
+html,
+body {
+    background: #111111;
+    color: #f3f4f6;
+    /* Tailwind gray-100 */
+}
+
+/* Provide an “accent” look for unclassed links (e.g. prose links) */
+a:not([class]),
+a:not([class]):visited {
+    color: #3fa9ff;
+    text-decoration: none;
+    text-underline-offset: 2px;
+}
+
+a:not([class]):hover {
+    color: #8fd1ff;
+    text-decoration: underline;
+}
+
+/* Keep <code> readable in prose without requiring per-instance classes */
+code:not([class]) {
+    border-radius: 6px;
+    background: rgba(255, 255, 255, 0.06);
+    padding: 0.125rem 0.375rem;
+    font-size: 0.75rem;
+    color: rgba(229, 231, 235, 1);
+}
+
+@layer components {
+    /*
+      Shared component classes implemented in plain CSS (no @apply).
+
+      Tailwind v4 in this project is currently rejecting @apply candidates during
+      the build. These classes keep the UI consistent without relying on @apply.
+    */
+
+    :root {
+        --ms-accent: 0, 122, 204;
+        /* #007acc */
+        --ms-bg: 17, 17, 17;
+        /* #111111 */
+        --ms-surface: 30, 30, 30;
+        /* sidebar DEFAULT */
+        --ms-border: 255, 255, 255;
+    }
+
+    /* Shared page layout */
+    .page-container {
+        max-width: 64rem;
+        /* ~= max-w-5xl */
+        margin: 0 auto;
+        padding: 2.5rem 1.5rem;
+        /* py-10 px-6 */
+    }
+
+    .page-header {
+        margin-bottom: 1.5rem;
+        /* mb-6 */
+        display: flex;
+        flex-wrap: wrap;
+        align-items: flex-end;
+        justify-content: space-between;
+        gap: 0.75rem;
+        /* gap-3 */
+    }
+
+    .page-title {
+        margin: 0;
+        font-size: 1.5rem;
+        /* text-2xl */
+        line-height: 2rem;
+        font-weight: 600;
+        color: #ffffff;
+    }
+
+    .page-subtitle {
+        margin-top: 0.25rem;
+        /* mt-1 */
+        margin-bottom: 0;
+        font-size: 0.875rem;
+        /* text-sm */
+        line-height: 1.25rem;
+        color: rgb(209, 213, 219);
+        /* gray-300 */
+    }
+
+    /* Cards */
+    .card {
+        border-radius: 0.75rem;
+        /* rounded-xl */
+        border: 1px solid rgba(var(--ms-border), 0.1);
+        background: rgb(var(--ms-surface));
+        padding: 1rem;
+    }
+
+    .card-title {
+        margin: 0;
+        font-size: 0.875rem;
+        /* text-sm */
+        line-height: 1.25rem;
+        font-weight: 600;
+        color: #ffffff;
+    }
+
+    /* Buttons */
+    .btn {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        border-radius: 0.5rem;
+        /* rounded-lg */
+        border: 1px solid rgba(var(--ms-border), 0.1);
+        background: rgba(var(--ms-border), 0.05);
+        padding: 0.5rem 0.75rem;
+        /* py-2 px-3 */
+        font-size: 0.875rem;
+        line-height: 1.25rem;
+        font-weight: 500;
+        color: rgb(243, 244, 246);
+        /* gray-100 */
+        cursor: pointer;
+        user-select: none;
+    }
+
+    .btn:hover {
+        background: rgba(var(--ms-border), 0.1);
+    }
+
+    .btn:disabled {
+        opacity: 0.6;
+        cursor: not-allowed;
+    }
+
+    .btn-primary {
+        border-color: rgba(var(--ms-accent), 0.4);
+        background: rgba(var(--ms-accent), 0.2);
+    }
+
+    .btn-primary:hover {
+        background: rgba(var(--ms-accent), 0.3);
+    }
+
+    /* Forms */
+    .form-row {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: flex-end;
+        gap: 0.75rem;
+    }
+
+    .field {
+        display: grid;
+        gap: 0.375rem;
+        /* gap-1.5 */
+    }
+
+    .field-label {
+        font-size: 0.75rem;
+        /* text-xs */
+        line-height: 1rem;
+        color: rgb(209, 213, 219);
+        /* gray-300 */
+    }
+
+    .input {
+        width: 100%;
+        border-radius: 0.5rem;
+        /* rounded-lg */
+        border: 1px solid rgba(var(--ms-border), 0.1);
+        background: rgba(var(--ms-border), 0.05);
+        padding: 0.5rem 0.75rem;
+        font-size: 0.875rem;
+        line-height: 1.25rem;
+        color: rgb(243, 244, 246);
+        /* gray-100 */
+    }
+
+    .input::placeholder {
+        color: rgb(107, 114, 128);
+        /* gray-500 */
+    }
+
+    .input:focus {
+        outline: none;
+        border-color: rgba(var(--ms-accent), 0.6);
+        box-shadow: 0 0 0 2px rgba(var(--ms-accent), 0.2);
+    }
+
+    /* Tables */
+    .table {
+        width: 100%;
+        border-collapse: collapse;
+        font-size: 0.875rem;
+        line-height: 1.25rem;
+    }
+
+    .table thead th {
+        border-bottom: 1px solid rgba(var(--ms-border), 0.1);
+        padding-bottom: 0.5rem;
+        text-align: left;
+        font-weight: 600;
+        color: rgb(229, 231, 235);
+        /* gray-200 */
+    }
+
+    .table tbody td {
+        border-bottom: 1px solid rgba(var(--ms-border), 0.05);
+        padding: 0.5rem 0;
+        color: rgb(229, 231, 235);
+    }
+
+    .table tbody tr:hover td {
+        background: rgba(var(--ms-border), 0.05);
+    }
+}
+
+/* Custom scrollbar for dark sidebar */
+.tree-container::-webkit-scrollbar {
+    width: 8px;
+}
+
+.tree-container::-webkit-scrollbar-track {
+    background: transparent;
+}
+
+.tree-container::-webkit-scrollbar-thumb {
+    background: #3c3c3c;
+    border-radius: 4px;
+}
+
+.tree-container::-webkit-scrollbar-thumb:hover {
+    background: #4c4c4c;
+}
+
+/* Custom scrollbar for light detail panel */
+.detail-panel::-webkit-scrollbar {
+    width: 8px;
+}
+
+.detail-panel::-webkit-scrollbar-track {
+    background: #f1f1f1;
+}
+
+.detail-panel::-webkit-scrollbar-thumb {
+    background: #c1c1c1;
+    border-radius: 4px;
+}
+
+.detail-panel::-webkit-scrollbar-thumb:hover {
+    background: #a1a1a1;
+}
+
+/* Smooth transitions (plain CSS fallback) */
+* {
+    transition: color 100ms ease, background-color 100ms ease, border-color 100ms ease;
+}
+
+/* Focus visible for accessibility */
+:focus-visible {
+    outline: 2px solid #007acc;
+    outline-offset: 2px;
+}
+
+/* Remove spinner from date inputs */
+input[type='date']::-webkit-calendar-picker-indicator {
+    cursor: pointer;
+    opacity: 0.5;
+}
+
+input[type='date']::-webkit-calendar-picker-indicator:hover {
+    opacity: 1;
+}
+
+/* Tree node animations */
+.tree-node-wrapper {
+    transition: all 150ms ease;
+}

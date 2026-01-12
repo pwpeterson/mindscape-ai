@@ -1883,6 +1883,7 @@ monitoring = [
     { name = "psutil" },
 ]
 web = [
+    { name = "aiosqlite" },
     { name = "fastapi" },
     { name = "httpx" },
     { name = "uvicorn", extra = ["standard"] },
@@ -1892,6 +1893,7 @@ web = [
 requires-dist = [
     { name = "aiofiles", marker = "extra == 'all'", specifier = ">=23.0.0" },
     { name = "aiofiles", marker = "extra == 'async'", specifier = ">=23.0.0" },
+    { name = "aiosqlite", marker = "extra == 'web'", specifier = ">=0.20.0" },
     { name = "alembic", marker = "extra == 'all'", specifier = ">=1.12.0" },
     { name = "alembic", marker = "extra == 'db'", specifier = ">=1.12.0" },
     { name = "anthropic", marker = "extra == 'ai'", specifier = ">=0.18.0" },
