@@ -12,14 +12,14 @@ ContainerName=mindscape-ai-web
 # UI listens on 8012 in-container; publish to host 8012
 PublishPort=8012:8012
 
-# Browser calls the API via this base URL (see PUBLIC base logic in [`web/src/lib/api/apps.ts`](web/src/lib/api/apps.ts:46)).
-# IMPORTANT: this must be reachable from the user's browser. If you access the UI at
-#   http://ubuntu-01:8012
-# then this should be:
-#   http://ubuntu-01:8011
-Environment=PUBLIC_MINDSCAPE_API_BASE=http://ubuntu-01:8011
+# API routing strategy:
+# - Browser calls same-origin "/api/*" (no PUBLIC_MINDSCAPE_API_BASE), which is reverse-proxied by SvelteKit
+#   via [`handle()`](web/src/hooks.server.ts:23).
+# - SvelteKit server calls the API via this internal base.
+#   NOTE: In many Podman setups containers do not share DNS by name; host.containers.internal is reliable.
+Environment=MINDSCAPE_API_INTERNAL_BASE=http://host.containers.internal:8011
 
-# Optional: request timeout to prevent UI hangs when API is unreachable
+# Optional: request timeout to prevent UI hangs when API is unreachable (used by the UI client helpers)
 Environment=PUBLIC_MINDSCAPE_API_TIMEOUT_MS=10000
 
 [Service]

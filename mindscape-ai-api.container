@@ -13,7 +13,8 @@ PublishPort=8011:8000
 
 # Defaults used by CMD in the image
 Environment=MINDSCAPE_HOST=0.0.0.0
-Environment=MINDSCAPE_PORT=8011
+# IMPORTANT: this is the *container* port; keep it aligned with Dockerfile EXPOSE (8000).
+Environment=MINDSCAPE_PORT=8000
 
 # Mem0 defaults to OpenAI providers; mem0 initialization will fail unless OPENAI_API_KEY is set.
 # To avoid committing secrets, put them in this optional file (note the leading '-' means "optional"):
