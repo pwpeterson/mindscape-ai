@@ -1,0 +1,22 @@
+{
+    "mcpServers": {
+        "mindscape-ai": {
+            "command": "/home/pwp/.local/bin/uv",
+            "args": [
+                "run",
+                "--directory",
+                "/home/pwp/srv/apps/mindscape-ai",
+                "python",
+                "-m",
+                "mindscape_ai.mcp_server"
+            ],
+            "env": {
+                "MINDSCAPE_MCP_APP_ID": "${workspaceFolderBasename}",
+                "MINDSCAPE_MCP_DB": "context_portal/context.db",
+                "MINDSCAPE_MCP_USER_ID": "default",
+                "MINDSCAPE_MCP_PROJECT_ID": "",
+                "MINDSCAPE_MCP_PROMPTS_MAX_FILE_BYTES": "200000"
+            }
+        }
+    }
+}

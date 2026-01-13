@@ -4,12 +4,12 @@ This module intentionally supports *server-side* Supabase access using a service
 The browser UI should never receive Supabase keys or connect to Supabase directly.
 
 Env vars (recommended):
-- MINDSCAPE_SUPABASE_URL
-- MINDSCAPE_SUPABASE_SERVICE_ROLE_KEY
-
-Fallback env vars (supported for convenience):
 - SUPABASE_URL
 - SUPABASE_SERVICE_ROLE_KEY
+
+Fallback env vars (supported for convenience / backward compatibility):
+- MINDSCAPE_SUPABASE_URL
+- MINDSCAPE_SUPABASE_SERVICE_ROLE_KEY
 
 Security:
 - Never log keys.
@@ -29,19 +29,20 @@ class SupabaseUnavailableError(RuntimeError):
 
 # Supabase stack commonly exposes Kong externally as SUPABASE_PUBLIC_URL / API_EXTERNAL_URL.
 SUPABASE_URL_ENV_KEYS: Final[tuple[str, ...]] = (
-    "MINDSCAPE_SUPABASE_URL",
     "SUPABASE_URL",
     "SUPABASE_PUBLIC_URL",
     "API_EXTERNAL_URL",
+    # Backward compatibility:
+    "MINDSCAPE_SUPABASE_URL",
 )
 
 # Supabase stack commonly uses SERVICE_ROLE_KEY / SUPABASE_SERVICE_ROLE_KEY.
 SUPABASE_SERVICE_KEY_ENV_KEYS: Final[tuple[str, ...]] = (
-    "MINDSCAPE_SUPABASE_SERVICE_ROLE_KEY",
-    "SUPABASE_SERVICE_ROLE_KEY",
     "SUPABASE_SERVICE_ROLE_KEY",
     "SERVICE_ROLE_KEY",
     "SERVICE_KEY",
+    # Backward compatibility:
+    "MINDSCAPE_SUPABASE_SERVICE_ROLE_KEY",
 )
 
 
@@ -65,11 +66,11 @@ class SupabaseSettings:
 
         if not url:
             raise SupabaseUnavailableError(
-                "Supabase is not configured (missing MINDSCAPE_SUPABASE_URL/SUPABASE_PUBLIC_URL)."
+                "Supabase is not configured (missing SUPABASE_URL/SUPABASE_PUBLIC_URL)."
             )
         if not key:
             raise SupabaseUnavailableError(
-                "Supabase is not configured (missing MINDSCAPE_SUPABASE_SERVICE_ROLE_KEY/SERVICE_ROLE_KEY)."
+                "Supabase is not configured (missing SUPABASE_SERVICE_ROLE_KEY/SERVICE_ROLE_KEY)."
             )
 
         return SupabaseSettings(url=url, service_role_key=key)

@@ -1,0 +1,30 @@
+[Unit]
+Description=Mindscape-AI Web (SvelteKit)
+Wants=network-online.target
+After=network-online.target
+Wants=mindscape-ai-api.service
+After=mindscape-ai-api.service
+
+[Container]
+Image=localhost/mindscape-ai-web:latest
+ContainerName=mindscape-ai-web
+
+# UI listens on 8012 in-container; publish to host 8012
+PublishPort=8012:8012
+
+# Browser calls the API via this base URL (see PUBLIC base logic in [`web/src/lib/api/apps.ts`](web/src/lib/api/apps.ts:46)).
+# IMPORTANT: this must be reachable from the user's browser. If you access the UI at
+#   http://ubuntu-01:8012
+# then this should be:
+#   http://ubuntu-01:8011
+Environment=PUBLIC_MINDSCAPE_API_BASE=http://ubuntu-01:8011
+
+# Optional: request timeout to prevent UI hangs when API is unreachable
+Environment=PUBLIC_MINDSCAPE_API_TIMEOUT_MS=10000
+
+[Service]
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=default.target

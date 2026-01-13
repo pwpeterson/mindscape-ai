@@ -1,0 +1,54 @@
+[Unit]
+Description=Mindscape-AI API (FastAPI)
+Wants=network-online.target
+After=network-online.target
+
+[Container]
+# Built from: [`Dockerfile.mindscape-ai-api`](Dockerfile.mindscape-ai-api:1)
+Image=localhost/mindscape-ai-api:latest
+ContainerName=mindscape-ai-api
+
+# API listens on 8000 in-container; publish to host 8011
+PublishPort=8011:8000
+
+# Defaults used by CMD in the image
+Environment=MINDSCAPE_HOST=0.0.0.0
+Environment=MINDSCAPE_PORT=8011
+
+# Mem0 defaults to OpenAI providers; mem0 initialization will fail unless OPENAI_API_KEY is set.
+# To avoid committing secrets, put them in this optional file (note the leading '-' means "optional"):
+#   mkdir -p ~/.config/mindscape-ai
+#   printf 'OPENAI_API_KEY=sk-...\n' > ~/.config/mindscape-ai/mindscape-ai-api.env
+#   chmod 600 ~/.config/mindscape-ai/mindscape-ai-api.env
+EnvironmentFile=%h/.config/containers/systemd/.env
+EnvironmentFile=%h/.config/containers/systemd/supabase.env
+EnvironmentFile=%h/.config/containers/systemd/mindscape-ai.env
+
+# Allow the browser-served UI to talk to this API (adjust to your deployment hostname)
+# If you access the UI at http://ubuntu-01:8012, that origin must be present here.
+Environment=MINDSCAPE_CORS_ORIGINS=http://127.0.0.1:8012,http://localhost:8012,http://ubuntu-01:8012
+
+# Optional: enable write endpoints for Workbench mode (default is false)
+# Environment=MINDSCAPE_WORKBENCH_WRITE=true
+
+# Optional: enable Apps registry write endpoints (default is false)
+# Environment=MINDSCAPE_APPS_WRITE=true
+
+# Optional: Supabase-backed app registry (recommended for multi-app)
+# Environment=SUPABASE_URL=https://your-project.supabase.co
+# Environment=SUPABASE_SERVICE_ROLE_KEY=...
+
+# Optional: legacy/dev multi-app fallback (comma-separated host paths).
+# If you use this, you likely also need Volume= mounts so the container can see those directories.
+# Environment=MINDSCAPE_APP_ROOTS=/srv/apps/app1,/srv/apps/app2
+# Volume=/srv/apps:/srv/apps:Z
+
+# Read-only root filesystem is nice-to-have, but left off until we confirm no writes are needed.
+# ReadOnly=true
+
+[Service]
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=default.target

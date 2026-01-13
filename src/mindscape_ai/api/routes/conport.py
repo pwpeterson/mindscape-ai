@@ -227,7 +227,7 @@ def _resolve_conport_db_from_app_id(app_id: str) -> Path:
             status_code=400,
             detail=(
                 "App registry is not configured. Configure Supabase "
-                "(MINDSCAPE_SUPABASE_URL + MINDSCAPE_SUPABASE_SERVICE_ROLE_KEY) "
+                "(SUPABASE_URL + SUPABASE_SERVICE_ROLE_KEY) "
                 "or set MINDSCAPE_APP_ROOTS."
             ),
         )

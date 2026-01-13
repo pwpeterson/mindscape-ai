@@ -4,6 +4,7 @@
 .env.test
 .env.BAK.*
 .env.backup
+supabase.env
 
 # roo
 .roo/

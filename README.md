@@ -244,9 +244,36 @@ The application packages (API server + UI) will be added under `src/` as impleme
 
 Mindscape-AI can be used alongside ConPort in your AI coding assistant. Configure ConPort as your MCP server, then use Mindscape-AI to visualize what context is being provided.
 
-### Custom MCP Server (Planned)
+### Mindscape-AI MCP Server (local stdio)
 
-Future versions will expose Mindscape-AI as an MCP server, allowing AI assistants to query the aggregated context view directly.
+Mindscape-AI ships a local stdio MCP server implemented via [`FastMCP`](pyproject.toml:24) in [`mindscape_ai.mcp_server`](src/mindscape_ai/mcp_server.py:1).
+
+**Run (stdio transport):**
+```bash
+uv run python -m mindscape_ai.mcp_server
+# or (if you are not using uv):
+python -m mindscape_ai.mcp_server
+```
+
+**Tools exposed:**
+- `conport.now`
+- `conport.search`
+- `mem0.search`
+- `prompts.files`
+- `tokens.breakdown`
+
+**Resources exposed:**
+- `conport://now`
+- `tokens://breakdown`
+
+**Optional env defaults for resources:**
+```bash
+export MINDSCAPE_MCP_APP_ID="mindscape-ai"      # optional
+export MINDSCAPE_MCP_DB="context_portal/context.db"  # optional (legacy ConPort db mode)
+export MINDSCAPE_MCP_USER_ID="default"          # optional (Mem0)
+export MINDSCAPE_MCP_PROJECT_ID=""              # optional (Mem0)
+export MINDSCAPE_MCP_PROMPTS_MAX_FILE_BYTES="200000" # optional
+```
 
 ---
 

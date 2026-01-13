@@ -1,0 +1,54 @@
+# syntax=docker/dockerfile:1
+#
+# Mindscape-AI API container (FastAPI + Uvicorn)
+#
+# IMPORTANT:
+# The ConPort “workbench” path resolution walks upward from the source tree until it finds
+# `context_portal/` (see [`find_workspace_root()`](src/mindscape_ai/conport/db.py:30)).
+# To make that work in a container, we keep a repo-like layout under /workspace and install
+# the package in editable mode (so module __file__ paths remain under /workspace/src).
+#
+# Build:
+#   podman build -t localhost/mindscape-ai-api:latest -f Dockerfile.mindscape-ai-api .
+#
+# Run (example):
+#   podman run --rm -p 8011:8000 localhost/mindscape-ai-api:latest
+#
+FROM python:3.11-slim
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1
+
+WORKDIR /workspace
+
+# Minimal runtime deps (curl used for optional healthcheck debugging)
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates curl \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy the minimal repo layout required for runtime:
+# - src/: Python package sources (editable install)
+# - context_portal/: default ConPort DB for this repo (optional but enables “self app” UX)
+# - README.md: required because pyproject declares `readme = "README.md"`
+COPY pyproject.toml ./
+COPY README.md ./README.md
+COPY src ./src
+COPY context_portal ./context_portal
+
+# Install with Mem0 extra so the Mem0 API routes can import `mem0` (provided by `mem0ai`).
+RUN python -m pip install --no-cache-dir -e ".[mem0]"
+
+# The API listens on 8000 inside the container.
+EXPOSE 8000
+
+# Sensible defaults; can be overridden via Quadlet Environment= lines.
+# Keep container port stable at 8000; map host port via Quadlet PublishPort (8011:8000).
+ENV MINDSCAPE_HOST=0.0.0.0 \
+    MINDSCAPE_PORT=8000 \
+    MINDSCAPE_INCLUDE_SELF_APP=true
+
+# Healthcheck: FastAPI health endpoint
+HEALTHCHECK --interval=10s --timeout=3s --start-period=10s --retries=3 \
+  CMD sh -c 'curl -fsS "http://127.0.0.1:${MINDSCAPE_PORT}/api/v1/health" >/dev/null || exit 1'
+
+CMD ["sh", "-lc", "uvicorn mindscape_ai.api.main:app --host ${MINDSCAPE_HOST} --port ${MINDSCAPE_PORT}"]

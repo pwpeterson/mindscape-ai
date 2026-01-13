@@ -7,6 +7,7 @@ from fastapi.testclient import TestClient
 
 from mindscape_ai.api.app import create_app
 from mindscape_ai.apps.supabase_store import AppStoreError, MindscapeApp, SupabaseUnavailableError
+from mindscape_ai.conport.db import ConPortDbPathError
 
 
 def _client() -> TestClient:
@@ -53,12 +54,20 @@ def test_apps_list_includes_self_app_when_not_configured_by_default(
     monkeypatch.delenv("MINDSCAPE_APP_ROOTS", raising=False)
     monkeypatch.delenv("MINDSCAPE_INCLUDE_SELF_APP", raising=False)
 
+    # Make the test deterministic: force the "no local ConPort DB yet" scenario.
+    monkeypatch.setattr(
+        apps_routes,
+        "resolve_conport_db_path",
+        lambda *args, **kwargs: (_ for _ in ()).throw(ConPortDbPathError("no conport db")),
+    )
+
     client = _client()
     resp = client.get("/api/v1/apps")
     assert resp.status_code == 200
 
     payload = resp.json()
-    assert payload["apps"] == [{"app_id": "mindscape-ai", "has_conport": True}]
+    # ConPort DB may not be initialized yet; the implicit self app should still appear.
+    assert payload["apps"] == [{"app_id": "mindscape-ai", "has_conport": False}]
     assert payload["source"]["configured"] is False
     assert payload["source"]["env"] == "MINDSCAPE_APP_ROOTS"
     assert payload["source"]["count"] == 1

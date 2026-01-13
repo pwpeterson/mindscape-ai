@@ -93,7 +93,7 @@
 
 			<!-- Top-level modules -->
 			<a
-				href={withScope("/conport/now")}
+				href={withScope("/conport")}
 				class="text-sm font-medium px-2 py-1 rounded-md transition-colors duration-150 text-gray-300 hover:text-white hover:bg-white/5"
 				class:bg-sidebar-selected={$page.url.pathname.startsWith(
 					"/conport",
@@ -125,6 +125,17 @@
 				Prompts
 			</a>
 
+			<a
+				href={withScope("/tokens")}
+				class="text-sm font-medium px-2 py-1 rounded-md transition-colors duration-150 text-gray-300 hover:text-white hover:bg-white/5"
+				class:bg-sidebar-selected={$page.url.pathname.startsWith(
+					"/tokens",
+				)}
+				class:text-white={$page.url.pathname.startsWith("/tokens")}
+			>
+				Tokens
+			</a>
+
 			<span class="mx-1 opacity-30">|</span>
 
 			<!-- Global app selector -->
@@ -141,7 +152,7 @@
 				>
 					<option value="">(local/default)</option>
 					{#each apps as a (a.app_id)}
-						<option value={a.app_id} disabled={!a.has_conport}>
+						<option value={a.app_id}>
 							{a.app_id}{a.has_conport ? "" : " (no conport db)"}
 						</option>
 					{/each}

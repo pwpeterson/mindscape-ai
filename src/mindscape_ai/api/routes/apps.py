@@ -77,31 +77,48 @@ def _self_app_enabled(flag_raw: str) -> bool:
 
 
 @lru_cache(maxsize=4)
-def _self_app_for_flag(flag_raw: str) -> MindscapeApp | None:
-    """Return an implicit MindscapeApp for the current repo, if resolvable.
+def _self_app_id_for_flag(flag_raw: str) -> str | None:
+    """Return the self-app_id for the current repo, if resolvable.
 
     Cache key is the env flag value so tests (and running processes) can toggle
     MINDSCAPE_INCLUDE_SELF_APP without getting stuck with stale cached results.
+
+    Note:
+        We intentionally do NOT cache has_conport here because tests may monkeypatch
+        resolve_conport_db_path; caching that result would leak across tests.
     """
     if not _self_app_enabled(flag_raw):
         return None
 
     try:
         root = find_workspace_root(start=Path(__file__))
-        app_id = read_app_id_from_pyproject(root / "pyproject.toml")
-
-        # Ensures the DB exists and is under <root>/context_portal/.
-        resolve_conport_db_path(None, start=Path(__file__))
-
-        return MindscapeApp(
-            app_id=app_id,
-            display_name=None,
-            enabled=True,
-            sort_order=-1000,
-            has_conport=True,
-        )
-    except (ConPortDbPathError, AppRegistryError, OSError, ValueError):
+        return read_app_id_from_pyproject(root / "pyproject.toml")
+    except (AppRegistryError, OSError, ValueError):
         return None
+
+
+def _self_app_for_flag(flag_raw: str) -> MindscapeApp | None:
+    """Return an implicit MindscapeApp for the current repo, if resolvable."""
+    app_id = _self_app_id_for_flag(flag_raw)
+    if app_id is None:
+        return None
+
+    # ConPort DB is optional; we still want the app to appear in the dropdown.
+    # Compute this dynamically (do not cache) to avoid cross-test pollution.
+    has_conport = False
+    try:
+        resolve_conport_db_path(None, start=Path(__file__))
+        has_conport = True
+    except ConPortDbPathError:
+        has_conport = False
+
+    return MindscapeApp(
+        app_id=app_id,
+        display_name=None,
+        enabled=True,
+        sort_order=-1000,
+        has_conport=has_conport,
+    )
 
 
 def _self_app() -> MindscapeApp | None:
