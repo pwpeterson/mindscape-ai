@@ -1,28 +1,55 @@
 """Apps registry API routes.
 
 Provides a safe way for the UI to discover which apps/projects are available
-in this Mindscape instance, keyed by `app_id` (from each app's pyproject.toml).
+in this Mindscape instance, keyed by `app_id`.
+
+Data sources:
+- Preferred: Supabase table `public.mindscape_ai_apps` (managed registry + CRUD)
+- Fallback (dev/tests): MINDSCAPE_APP_ROOTS filesystem scanning
 
 Security:
-- The backend determines allowed app roots (env/config).
-- Clients never provide paths; they only select an `app_id`.
+- The browser UI never sends filesystem paths.
+- Paths are stored server-side and used only for local resolution (e.g. ConPort DB).
+- Mutating operations are gated behind MINDSCAPE_APPS_WRITE=true (fail-closed).
 """
 
 from __future__ import annotations
 
 import os
+import re
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Body, HTTPException
 
-from mindscape_ai.apps.registry import (
-    AppRegistryError,
-    discover_apps,
-    normalize_app_roots,
+from mindscape_ai.apps.registry import AppRegistryError, discover_apps, normalize_app_roots
+from mindscape_ai.apps.supabase_store import (
+    AppStoreError,
+    SupabaseUnavailableError,
+    create_app_in_supabase,
+    delete_app_in_supabase,
+    list_apps_from_supabase,
+    update_app_in_supabase,
 )
 
 router = APIRouter(prefix="/apps", tags=["apps"])
+
+# Hard limits for untrusted payloads/query params (DoS guardrails)
+APP_ID_MAX_LEN = 200
+ROOT_PATH_MAX_LEN = 4096
+
+
+def _write_enabled() -> bool:
+    """Whether apps write endpoints are enabled.
+
+    Fail-closed: unknown values disable writes.
+    """
+    raw = os.getenv("MINDSCAPE_APPS_WRITE", "false").strip().lower()
+    if raw in {"1", "true", "yes"}:
+        return True
+    if raw in {"0", "false", "no", ""}:
+        return False
+    return False
 
 
 def _parse_app_roots_env(raw: str | None) -> list[str]:
@@ -32,15 +59,61 @@ def _parse_app_roots_env(raw: str | None) -> list[str]:
     return [part.strip() for part in raw.split(",") if part.strip()]
 
 
+def _validate_app_id(app_id: Any) -> str:
+    if not isinstance(app_id, str) or not app_id.strip():
+        raise HTTPException(status_code=400, detail="app_id is required")
+    value = app_id.strip()
+    if len(value) > APP_ID_MAX_LEN:
+        raise HTTPException(status_code=400, detail="app_id too long")
+    # Allow typical package/project names: letters, digits, underscore, dash, dot.
+    if re.fullmatch(r"[A-Za-z0-9_.-]+", value) is None:
+        raise HTTPException(status_code=400, detail="Invalid characters in app_id")
+    return value
+
+
+def _validate_root_path(root_path: Any) -> str:
+    if not isinstance(root_path, str) or not root_path.strip():
+        raise HTTPException(status_code=400, detail="root_path is required")
+    value = root_path.strip()
+    # Guard against control characters that can lead to confusing logs/headers.
+    if "\n" in value or "\r" in value:
+        raise HTTPException(status_code=400, detail="Invalid root_path (control characters)")
+    if "\x00" in value:
+        raise HTTPException(status_code=400, detail="Invalid root_path (NUL byte)")
+    if len(value) > ROOT_PATH_MAX_LEN:
+        raise HTTPException(status_code=400, detail="root_path too long")
+
+    p = Path(value).expanduser()
+    if not p.is_absolute():
+        raise HTTPException(status_code=400, detail="root_path must be an absolute path")
+    if not p.exists() or not p.is_dir():
+        raise HTTPException(status_code=400, detail="root_path does not exist or is not a directory")
+    return str(p.resolve())
+
+
 @router.get("")
 @router.get("/")
 async def list_apps() -> dict[str, Any]:
-    """List available apps/projects.
+    """List available apps/projects for the UI dropdown.
 
-    Env:
-        MINDSCAPE_APP_ROOTS: comma-separated list of app root directories.
-            Each must contain a pyproject.toml with [project].name.
+    Preferred source: Supabase (`mindscape_ai_apps`).
+    Fallback: MINDSCAPE_APP_ROOTS env scanning (legacy/dev/tests).
     """
+    # Preferred: Supabase registry
+    try:
+        apps = list_apps_from_supabase(include_disabled=False)
+        return {
+            "apps": [{"app_id": a.app_id, "has_conport": a.has_conport} for a in apps],
+            "source": {"type": "supabase", "table": "mindscape_ai_apps", "configured": True, "count": len(apps)},
+        }
+    except SupabaseUnavailableError:
+        # Fall back to env scanning
+        pass
+    except AppStoreError as exc:
+        # Misconfigured Supabase table/rows shouldn't 500 the UI; surface as 400.
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    # Fallback: legacy env scanning
     roots_raw = _parse_app_roots_env(os.getenv("MINDSCAPE_APP_ROOTS"))
     if not roots_raw:
         # Fail closed: no implicit filesystem scanning.
@@ -48,18 +121,125 @@ async def list_apps() -> dict[str, Any]:
 
     try:
         roots = normalize_app_roots([Path(p) for p in roots_raw])
-        apps = discover_apps(roots)
+        discovered = discover_apps(roots)
     except AppRegistryError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-    # Avoid leaking filesystem paths to the UI; only expose what the UI needs.
     return {
-        "apps": [
-            {
-                "app_id": app.app_id,
-                "has_conport": app.conport_db_path is not None,
-            }
-            for app in apps
-        ],
-        "source": {"env": "MINDSCAPE_APP_ROOTS", "configured": True, "count": len(apps)},
+        "apps": [{"app_id": app.app_id, "has_conport": app.conport_db_path is not None} for app in discovered],
+        "source": {"env": "MINDSCAPE_APP_ROOTS", "configured": True, "count": len(discovered)},
     }
+
+
+@router.post("")
+@router.post("/")
+async def create_app(payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
+    """Create an app in Supabase (write-gated)."""
+    if not _write_enabled():
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                "Apps write operations are disabled. "
+                "Set MINDSCAPE_APPS_WRITE=true to enable."
+            ),
+        )
+
+    app_id = _validate_app_id(payload.get("app_id"))
+    root_path = _validate_root_path(payload.get("root_path"))
+
+    display_name = payload.get("display_name")
+    if display_name is not None and not isinstance(display_name, str):
+        raise HTTPException(status_code=400, detail="Invalid display_name")
+
+    enabled = payload.get("enabled", True)
+    if enabled is not None and not isinstance(enabled, bool):
+        raise HTTPException(status_code=400, detail="Invalid enabled")
+
+    sort_order = payload.get("sort_order", 0)
+    if sort_order is not None and not isinstance(sort_order, int):
+        raise HTTPException(status_code=400, detail="Invalid sort_order")
+
+    try:
+        created = create_app_in_supabase(
+            app_id=app_id,
+            root_path=root_path,
+            display_name=display_name,
+            enabled=bool(enabled),
+            sort_order=int(sort_order),
+        )
+    except SupabaseUnavailableError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except AppStoreError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    return {"app": created.__dict__}
+
+
+@router.patch("/{app_id}")
+async def update_app(app_id: str, payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
+    """Update an app in Supabase (write-gated)."""
+    if not _write_enabled():
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                "Apps write operations are disabled. "
+                "Set MINDSCAPE_APPS_WRITE=true to enable."
+            ),
+        )
+
+    app_id_norm = _validate_app_id(app_id)
+    patch: dict[str, Any] = {}
+
+    if "display_name" in payload:
+        dn = payload.get("display_name")
+        if dn is not None and not isinstance(dn, str):
+            raise HTTPException(status_code=400, detail="Invalid display_name")
+        patch["display_name"] = dn
+
+    if "root_path" in payload:
+        patch["root_path"] = _validate_root_path(payload.get("root_path"))
+
+    if "enabled" in payload:
+        en = payload.get("enabled")
+        if not isinstance(en, bool):
+            raise HTTPException(status_code=400, detail="Invalid enabled")
+        patch["enabled"] = en
+
+    if "sort_order" in payload:
+        so = payload.get("sort_order")
+        if not isinstance(so, int):
+            raise HTTPException(status_code=400, detail="Invalid sort_order")
+        patch["sort_order"] = so
+
+    try:
+        updated = update_app_in_supabase(app_id=app_id_norm, patch=patch)
+    except SupabaseUnavailableError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except AppStoreError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    return {"app": updated.__dict__}
+
+
+@router.delete("/{app_id}")
+async def delete_app(app_id: str) -> dict[str, Any]:
+    """Delete an app in Supabase (write-gated)."""
+    if not _write_enabled():
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                "Apps write operations are disabled. "
+                "Set MINDSCAPE_APPS_WRITE=true to enable."
+            ),
+        )
+
+    app_id_norm = _validate_app_id(app_id)
+
+    try:
+        deleted = delete_app_in_supabase(app_id=app_id_norm)
+    except SupabaseUnavailableError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except AppStoreError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    return {"deleted": deleted, "app_id": app_id_norm}

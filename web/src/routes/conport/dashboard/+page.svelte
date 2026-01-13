@@ -9,13 +9,8 @@
 		ConportDashboardResponse,
 		ConportProgressEntry,
 		ConportProgressListResponse,
-		ConportProgressResponse,
 	} from "$lib/api/conport";
-	import {
-		conportDashboard,
-		conportProgress,
-		conportProgressList,
-	} from "$lib/api/conport";
+	import { conportDashboard, conportProgressList } from "$lib/api/conport";
 	import { connectEventsStream } from "$lib/api/events";
 
 	const TASK_TREE_LIMIT = 500;
@@ -27,7 +22,7 @@
 	let treeEntries = $state<ConportProgressEntry[]>([]);
 	let tree = $state<ProgressTreeNode[]>([]);
 
-	const AUTO_REFRESH_MIN_INTERVAL_MS = 15_000;
+	const AUTO_REFRESH_MIN_INTERVAL_MS = 600_000; // 10 minutes
 	let lastAutoRefreshAtMs = $state<number>(0);
 
 	function maybeAutoRefresh() {
@@ -266,97 +261,106 @@
 			treeEntries = (list as ConportProgressListResponse)
 				.progress_entries;
 
-			// Robustness: the Phase notes entry (e.g. "Phase 1: ...") may be older than the
-			// latest TASK_TREE_LIMIT rows and therefore omitted, even though the Phase node
-			// is present. Fetch Phase 1's direct children explicitly and merge.
+			// Robustness: Phase nodes and their notes can be older than the latest TASK_TREE_LIMIT
+			// rows and therefore omitted.
 			//
-			// Note: list endpoints are ordered by id DESC. If Phase 1 has many children, the
-			// narrative notes row can be older than the newest slice. We therefore:
-			// 1) fetch latest children (status: null)
-			// 2) fetch the notes row directly via `description_prefix`
-			const phase1Id = extractPhaseIdFromEntries(treeEntries, 1);
-			if (phase1Id != null) {
-				const [phase1ChildrenAll, phase1Notes] = await Promise.all([
-					conportProgressList(fetch, {
-						status: null,
-						parent_id: phase1Id,
-						limit: 500,
-						app_id,
-						db,
-					}),
-					conportProgressList(fetch, {
-						parent_id: phase1Id,
-						description_prefix: "Phase 1:",
-						limit: 50,
-						app_id,
-						db,
-					}),
-				]);
+			// Backfill any root-level rows that start with "Phase" or "[P" (covers both:
+			// - "Phase N — ..." / "Phase N: ..."
+			// - "[P1] Phase N — ..." / "[P1] Phase N: ..."
+			const [phaseBackfill, phaseBackfillPrioritized] = await Promise.all([
+				conportProgressList(fetch, {
+					status: null,
+					parent_id: null,
+					description_prefix: "Phase",
+					limit: 200,
+					app_id,
+					db,
+				}),
+				conportProgressList(fetch, {
+					status: null,
+					parent_id: null,
+					description_prefix: "[P",
+					limit: 200,
+					app_id,
+					db,
+				}),
+			]);
+
+			treeEntries = mergeProgressEntries(
+				treeEntries,
+				(phaseBackfill as ConportProgressListResponse).progress_entries,
+			);
+			treeEntries = mergeProgressEntries(
+				treeEntries,
+				(phaseBackfillPrioritized as ConportProgressListResponse).progress_entries,
+			);
+
+			// Ensure each Phase node has its notes attached as children so TaskExplorerTree can
+			// render the Notes subpanel.
+			const phaseNumbers = Array.from(
+				new Set(
+					treeEntries
+						.map((e) => extractPhaseNumber(e.description))
+						.filter((n): n is number => n != null),
+				),
+			).sort((a, b) => a - b);
+
+			for (const phaseNumber of phaseNumbers) {
+				const phaseId = extractPhaseIdFromEntries(treeEntries, phaseNumber);
+				if (phaseId == null) continue;
+
+				const [phaseChildrenAll, phaseNotesRoot, phaseNotesAttached] =
+					await Promise.all([
+							conportProgressList(fetch, {
+								status: null,
+								parent_id: phaseId,
+								limit: 500,
+								app_id,
+								db,
+							}),
+							// Notes are often stored as root-level rows (parent_id = null)
+							conportProgressList(fetch, {
+								parent_id: null,
+								description_prefix: `Phase ${phaseNumber}:`,
+								limit: 50,
+								app_id,
+								db,
+							}),
+							// ...but support DBs where notes were already attached under the phase
+							conportProgressList(fetch, {
+								parent_id: phaseId,
+								description_prefix: `Phase ${phaseNumber}:`,
+								limit: 50,
+								app_id,
+								db,
+							}),
+						]);
 
 				treeEntries = mergeProgressEntries(
 					treeEntries,
-					(phase1ChildrenAll as ConportProgressListResponse)
+					(phaseChildrenAll as ConportProgressListResponse)
+						.progress_entries,
+				);
+				treeEntries = mergeProgressEntries(
+					treeEntries,
+					(phaseNotesAttached as ConportProgressListResponse)
 						.progress_entries,
 				);
 
-				// Phase notes are often stored as root-level rows (parent_id = null).
-				// The explorer UI shows notes in a subpanel under the Phase node, and hides
-				// standalone note leaves. So we "virtually" attach notes under the Phase node
-				// for display by overriding parent_id client-side.
-				const phase1NotesEntriesRaw = (
-					phase1Notes as ConportProgressListResponse
-				).progress_entries;
-
-				const phase1NotesEntries = phase1NotesEntriesRaw.map((n) => {
-					if (
-						n.parent_id == null &&
-						/^\s*phase\s+1\s*:/i.test(n.description)
-					) {
-						return { ...n, parent_id: phase1Id };
+				const rootNotes = (phaseNotesRoot as ConportProgressListResponse)
+					.progress_entries;
+				const re = new RegExp(
+					`^\\s*(?:\\[p\\d+\\]\\s*)?phase\\s+${phaseNumber}\\s*:`,
+					"i",
+				);
+				const attachedNotes = rootNotes.map((n) => {
+					if (n.parent_id == null && re.test(n.description)) {
+						return { ...n, parent_id: phaseId };
 					}
 					return n;
 				});
 
-				treeEntries = mergeProgressEntries(
-					treeEntries,
-					phase1NotesEntries,
-				);
-
-				// Fallback: if still missing, try to fetch progress id=1 directly and merge it
-				// only if it looks like the Phase 1 notes row (covers unusual DBs).
-				const hasPhase1Notes = treeEntries.some(
-					(e) =>
-						e.parent_id === phase1Id &&
-						/^\s*phase\s+1\s*:/i.test(e.description),
-				);
-
-				if (!hasPhase1Notes) {
-					try {
-						const noteResp = await conportProgress(fetch, {
-							id: 1,
-							app_id,
-							db,
-						});
-						const note = (noteResp as ConportProgressResponse)
-							.progress;
-
-						if (/^\s*phase\s+1\s*:/i.test(note.description)) {
-							const attached =
-								note.parent_id == null
-									? { ...note, parent_id: phase1Id }
-									: note;
-
-							if (attached.parent_id === phase1Id) {
-								treeEntries = mergeProgressEntries(
-									treeEntries,
-									[attached],
-								);
-							}
-						}
-					} catch {
-						// ignore (e.g., different DB where id=1 doesn't exist)
-					}
-				}
+				treeEntries = mergeProgressEntries(treeEntries, attachedNotes);
 			}
 
 			tree = buildTree(treeEntries);
@@ -366,8 +370,23 @@
 				? planDisplayTitle(planRoot.entry.description)
 				: null;
 
-			// Render only plan children in the status panels (exclude the plan root itself).
-			panelTree = planRoot ? planRoot.children : tree;
+			// Render plan children in the status panels (exclude the plan root itself).
+			// But ALSO include any other root-level nodes (not just phases), because many
+			// parent tasks (e.g. T030) are not direct children of the [plan] node.
+			const planChildren = planRoot ? planRoot.children : [];
+			const planChildIds = new Set(planChildren.map((n) => n.entry.id));
+
+			const rootsExcludingPlan = planRoot
+				? tree.filter((n) => n.entry.id !== planRoot.entry.id)
+				: tree;
+
+			const otherRoots = rootsExcludingPlan.filter(
+				(n) => !planChildIds.has(n.entry.id),
+			);
+
+			const mergedRoots = planRoot ? [...planChildren, ...otherRoots] : tree;
+
+			panelTree = mergedRoots;
 
 			const { lanes, counts } = partitionTreeByLane(panelTree);
 

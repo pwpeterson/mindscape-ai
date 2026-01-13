@@ -154,6 +154,13 @@
 				>
 					{appsLoading ? "Loading…" : "Reload"}
 				</button>
+
+				<a
+					href={withScope("/apps")}
+					class="text-xs px-2 py-1 rounded-md border border-white/10 bg-white/5 text-gray-200 hover:bg-white/10"
+				>
+					Manage
+				</a>
 			</div>
 
 			{#if appsError}

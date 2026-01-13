@@ -26,6 +26,7 @@ logs/
 
 # ConPort vector artifacts
 context_portal/conport_vector_data/
+context_portal/conport_vector_data.bak-*/
 
 # Claude
 .claude

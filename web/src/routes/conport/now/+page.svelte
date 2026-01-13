@@ -21,7 +21,7 @@
 	let inProgressEntries = $state<ConportProgressEntry[]>([]);
 	let doneEntries = $state<ConportProgressEntry[]>([]);
 
-	const AUTO_REFRESH_MIN_INTERVAL_MS = 15_000;
+	const AUTO_REFRESH_MIN_INTERVAL_MS = 600_000; // 10 minutes
 	let lastAutoRefreshAtMs = $state<number>(0);
 
 	function maybeAutoRefresh() {

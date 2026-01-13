@@ -18,10 +18,11 @@ from typing import Any, Literal
 import aiosqlite
 from fastapi import APIRouter, Body, HTTPException, Query
 
-from mindscape_ai.apps.registry import (
-    AppRegistryError,
-    discover_apps,
-    normalize_app_roots,
+from mindscape_ai.apps.registry import AppRegistryError, discover_apps, normalize_app_roots
+from mindscape_ai.apps.supabase_store import (
+    AppStoreError,
+    SupabaseUnavailableError,
+    resolve_conport_db_path_from_supabase,
 )
 from mindscape_ai.conport import ConPortDbPathError, resolve_conport_db_path
 
@@ -157,7 +158,22 @@ def _apps_by_id() -> dict[str, Path]:
 
 
 def _resolve_conport_db_from_app_id(app_id: str) -> Path:
-    """Resolve app_id -> conport db path using the registry mapping."""
+    """Resolve app_id -> conport db path.
+
+    Preferred source: Supabase app registry (`mindscape_ai_apps`).
+    Fallback: MINDSCAPE_APP_ROOTS filesystem scanning (legacy/dev/tests).
+    """
+    # Preferred: Supabase registry
+    try:
+        return resolve_conport_db_path_from_supabase(app_id)
+    except SupabaseUnavailableError:
+        # Fall back to env scanning
+        pass
+    except AppStoreError as exc:
+        # Supabase is configured but data is invalid/missing.
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    # Fallback: legacy env scanning
     try:
         mapping = _apps_by_id()
     except AppRegistryError as exc:
@@ -166,7 +182,11 @@ def _resolve_conport_db_from_app_id(app_id: str) -> Path:
     if not mapping:
         raise HTTPException(
             status_code=400,
-            detail="App registry is not configured (set MINDSCAPE_APP_ROOTS).",
+            detail=(
+                "App registry is not configured. Configure Supabase "
+                "(MINDSCAPE_SUPABASE_URL + MINDSCAPE_SUPABASE_SERVICE_ROLE_KEY) "
+                "or set MINDSCAPE_APP_ROOTS."
+            ),
         )
 
     if app_id not in mapping:
@@ -604,22 +624,39 @@ async def conport_search(
 
     conn, db_resolved, app_id_resolved = await _open_aiosqlite(db, app_id=app_id, read_only=True)
     try:
-        has_decisions_fts = await _table_exists(conn, "decisions_fts")
-        has_custom_fts = await _table_exists(conn, "custom_data_fts")
+        # NOTE:
+        # Even when FTS tables exist, SQLite can raise OperationalError for certain MATCH queries
+        # (e.g. unbalanced quotes, reserved operators, etc.). Those should not surface as 500s.
+        decisions_fts_available = await _table_exists(conn, "decisions_fts")
+        custom_fts_available = await _table_exists(conn, "custom_data_fts")
 
-        decisions: list[dict[str, Any]] = []
-        custom_data: list[dict[str, Any]] = []
+        decisions_fts_used = decisions_fts_available
+        custom_fts_used = custom_fts_available
 
-        if has_decisions_fts:
-            rows = await _fetchall(
-                conn,
-                "SELECT d.id, d.timestamp, d.summary, d.rationale, "
-                "d.implementation_details, d.tags "
-                "FROM decisions_fts f JOIN decisions d ON d.id = f.rowid "
-                "WHERE decisions_fts MATCH ? "
-                "ORDER BY d.id DESC LIMIT ?",
-                (q, limit),
-            )
+        if decisions_fts_available:
+            try:
+                rows = await _fetchall(
+                    conn,
+                    "SELECT d.id, d.timestamp, d.summary, d.rationale, "
+                    "d.implementation_details, d.tags "
+                    "FROM decisions_fts f JOIN decisions d ON d.id = f.rowid "
+                    "WHERE decisions_fts MATCH ? "
+                    "ORDER BY d.id DESC LIMIT ?",
+                    (q, limit),
+                )
+            except aiosqlite.Error:
+                # Fall back to LIKE search if the MATCH expression is invalid for this SQLite build.
+                decisions_fts_used = False
+                like = f"%{q}%"
+                rows = await _fetchall(
+                    conn,
+                    "SELECT id, timestamp, summary, rationale, implementation_details, tags "
+                    "FROM decisions "
+                    "WHERE summary LIKE ? OR rationale LIKE ? OR implementation_details LIKE ? "
+                    "OR tags LIKE ? "
+                    "ORDER BY id DESC LIMIT ?",
+                    (like, like, like, like, limit),
+                )
         else:
             like = f"%{q}%"
             rows = await _fetchall(
@@ -644,15 +681,27 @@ async def conport_search(
             for r in rows
         ]
 
-        if has_custom_fts:
-            rows2 = await _fetchall(
-                conn,
-                "SELECT c.id, c.timestamp, c.category, c.key, c.value "
-                "FROM custom_data_fts f JOIN custom_data c ON c.id = f.rowid "
-                "WHERE custom_data_fts MATCH ? "
-                "ORDER BY c.id DESC LIMIT ?",
-                (q, limit),
-            )
+        if custom_fts_available:
+            try:
+                rows2 = await _fetchall(
+                    conn,
+                    "SELECT c.id, c.timestamp, c.category, c.key, c.value "
+                    "FROM custom_data_fts f JOIN custom_data c ON c.id = f.rowid "
+                    "WHERE custom_data_fts MATCH ? "
+                    "ORDER BY c.id DESC LIMIT ?",
+                    (q, limit),
+                )
+            except aiosqlite.Error:
+                custom_fts_used = False
+                like = f"%{q}%"
+                rows2 = await _fetchall(
+                    conn,
+                    "SELECT id, timestamp, category, key, value "
+                    "FROM custom_data "
+                    "WHERE category LIKE ? OR key LIKE ? OR value LIKE ? "
+                    "ORDER BY id DESC LIMIT ?",
+                    (like, like, like, limit),
+                )
         else:
             like = f"%{q}%"
             rows2 = await _fetchall(
@@ -679,7 +728,7 @@ async def conport_search(
             "app_id": app_id_resolved,
             "db": db_resolved,
             "query": q,
-            "fts": {"decisions": has_decisions_fts, "custom_data": has_custom_fts},
+            "fts": {"decisions": decisions_fts_used, "custom_data": custom_fts_used},
             "results": {"decisions": decisions, "custom_data": custom_data},
         }
     finally:

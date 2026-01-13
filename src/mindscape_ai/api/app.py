@@ -15,6 +15,7 @@ from loguru import logger
 from mindscape_ai.api.routes.apps import router as apps_router
 from mindscape_ai.api.routes.conport import router as conport_router
 from mindscape_ai.api.routes.events import router as events_router
+from mindscape_ai.api.routes.mem0 import router as mem0_router
 
 API_PREFIX: Final[str] = "/api/v1"
 
@@ -55,6 +56,7 @@ def create_app() -> FastAPI:
 
     api.include_router(apps_router)
     api.include_router(conport_router)
+    api.include_router(mem0_router)
     api.include_router(events_router)
     app.include_router(api)
 
