@@ -9,14 +9,14 @@
         switch (pathname) {
             case "/conport/dashboard":
                 return {
-                    title: "ConPort — Dashboard",
-                    subtitle: "High-level rollups for Workbench mode.",
-                };
-            case "/conport/now":
-                return {
                     title: "ConPort — Now",
                     subtitle:
                         "Workbench snapshot from your local ConPort SQLite DB.",
+                };
+            case "/conport/now":
+                return {
+                    title: "ConPort — Dashboard",
+                    subtitle: "High-level rollups for Workbench mode.",
                 };
             case "/conport/search":
                 return {
@@ -118,21 +118,21 @@
 
                 <nav class="mt-3 flex flex-col gap-1">
                     <a
-                        href={withScope("/conport/now")}
-                        class="text-sm px-3 py-2 rounded-md transition-colors duration-150 hover:bg-white/5"
-                        class:bg-sidebar-selected={isActive("/conport/now")}
-                        class:text-white={isActive("/conport/now")}
-                    >
-                        Now
-                    </a>
-
-                    <a
                         href={withScope("/conport/dashboard")}
                         class="text-sm px-3 py-2 rounded-md transition-colors duration-150 hover:bg-white/5"
                         class:bg-sidebar-selected={isActive(
                             "/conport/dashboard",
                         )}
                         class:text-white={isActive("/conport/dashboard")}
+                    >
+                        Now
+                    </a>
+
+                    <a
+                        href={withScope("/conport/now")}
+                        class="text-sm px-3 py-2 rounded-md transition-colors duration-150 hover:bg-white/5"
+                        class:bg-sidebar-selected={isActive("/conport/now")}
+                        class:text-white={isActive("/conport/now")}
                     >
                         Dashboard
                     </a>

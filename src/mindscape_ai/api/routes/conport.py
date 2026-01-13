@@ -18,13 +18,18 @@ from typing import Any, Literal
 import aiosqlite
 from fastapi import APIRouter, Body, HTTPException, Query
 
-from mindscape_ai.apps.registry import AppRegistryError, discover_apps, normalize_app_roots
+from mindscape_ai.apps.registry import (
+    AppRegistryError,
+    discover_apps,
+    normalize_app_roots,
+    read_app_id_from_pyproject,
+)
 from mindscape_ai.apps.supabase_store import (
     AppStoreError,
     SupabaseUnavailableError,
     resolve_conport_db_path_from_supabase,
 )
-from mindscape_ai.conport import ConPortDbPathError, resolve_conport_db_path
+from mindscape_ai.conport import ConPortDbPathError, find_workspace_root, resolve_conport_db_path
 
 router = APIRouter(prefix="/conport", tags=["conport"])
 
@@ -157,12 +162,50 @@ def _apps_by_id() -> dict[str, Path]:
     return _apps_by_id_for_env(os.getenv("MINDSCAPE_APP_ROOTS", ""))
 
 
+def _self_app_flag_raw() -> str:
+    return os.getenv("MINDSCAPE_INCLUDE_SELF_APP", "true").strip().lower()
+
+
+def _self_app_enabled(flag_raw: str) -> bool:
+    return flag_raw in {"1", "true", "yes"}
+
+
+@lru_cache(maxsize=4)
+def _self_app_db_for_flag(flag_raw: str) -> tuple[str, Path] | None:
+    """Return (self_app_id, conport_db_path) for this repo, if resolvable.
+
+    Cache key is the env flag value so tests (and running processes) can toggle
+    MINDSCAPE_INCLUDE_SELF_APP without getting stuck with stale cached results.
+    """
+    if not _self_app_enabled(flag_raw):
+        return None
+
+    try:
+        root = find_workspace_root(start=Path(__file__))
+        app_id = read_app_id_from_pyproject(root / "pyproject.toml")
+        db_path = resolve_conport_db_path(None, start=Path(__file__))
+        return app_id, db_path
+    except (ConPortDbPathError, AppRegistryError, OSError, ValueError):
+        return None
+
+
+def _self_app_db() -> tuple[str, Path] | None:
+    return _self_app_db_for_flag(_self_app_flag_raw())
+
+
 def _resolve_conport_db_from_app_id(app_id: str) -> Path:
     """Resolve app_id -> conport db path.
 
     Preferred source: Supabase app registry (`mindscape_ai_apps`).
     Fallback: MINDSCAPE_APP_ROOTS filesystem scanning (legacy/dev/tests).
+
+    Additionally, for local/dev UX, we allow resolving this Mindscape-AI repo as an
+    implicit app when `app_id` matches its `[project].name`.
     """
+    self_info = _self_app_db()
+    if self_info is not None and app_id == self_info[0]:
+        return self_info[1]
+
     # Preferred: Supabase registry
     try:
         return resolve_conport_db_path_from_supabase(app_id)

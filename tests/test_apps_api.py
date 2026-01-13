@@ -16,6 +16,7 @@ def _client() -> TestClient:
 
 def test_apps_list_falls_back_to_env_when_supabase_unavailable(monkeypatch: pytest.MonkeyPatch) -> None:
     # Supabase path is preferred; if unavailable we fall back to MINDSCAPE_APP_ROOTS.
+    # Disable the "self app" convenience so we can assert the strict fail-closed baseline.
     import mindscape_ai.api.routes.apps as apps_routes
 
     monkeypatch.setattr(
@@ -24,6 +25,7 @@ def test_apps_list_falls_back_to_env_when_supabase_unavailable(monkeypatch: pyte
         lambda *, include_disabled=False: (_ for _ in ()).throw(SupabaseUnavailableError("no supabase")),
     )
     monkeypatch.delenv("MINDSCAPE_APP_ROOTS", raising=False)
+    monkeypatch.setenv("MINDSCAPE_INCLUDE_SELF_APP", "false")
 
     client = _client()
     resp = client.get("/api/v1/apps")
@@ -33,6 +35,33 @@ def test_apps_list_falls_back_to_env_when_supabase_unavailable(monkeypatch: pyte
     assert payload["apps"] == []
     assert payload["source"]["configured"] is False
     assert payload["source"]["env"] == "MINDSCAPE_APP_ROOTS"
+    assert payload["source"]["count"] == 0
+
+
+def test_apps_list_includes_self_app_when_not_configured_by_default(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Local/dev UX: even without Supabase + MINDSCAPE_APP_ROOTS, the API should include
+    # this Mindscape-AI instance so the UI dropdown isn't empty.
+    import mindscape_ai.api.routes.apps as apps_routes
+
+    monkeypatch.setattr(
+        apps_routes,
+        "list_apps_from_supabase",
+        lambda *, include_disabled=False: (_ for _ in ()).throw(SupabaseUnavailableError("no supabase")),
+    )
+    monkeypatch.delenv("MINDSCAPE_APP_ROOTS", raising=False)
+    monkeypatch.delenv("MINDSCAPE_INCLUDE_SELF_APP", raising=False)
+
+    client = _client()
+    resp = client.get("/api/v1/apps")
+    assert resp.status_code == 200
+
+    payload = resp.json()
+    assert payload["apps"] == [{"app_id": "mindscape-ai", "has_conport": True}]
+    assert payload["source"]["configured"] is False
+    assert payload["source"]["env"] == "MINDSCAPE_APP_ROOTS"
+    assert payload["source"]["count"] == 1
 
 
 def test_apps_list_uses_supabase_when_available(monkeypatch: pytest.MonkeyPatch) -> None:

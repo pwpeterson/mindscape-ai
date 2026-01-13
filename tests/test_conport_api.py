@@ -17,8 +17,10 @@ def test_health_ok() -> None:
 
 
 def test_apps_list_empty_when_not_configured(monkeypatch) -> None:
-    # Fail-closed: no implicit scanning when MINDSCAPE_APP_ROOTS is unset.
+    # Fail-closed baseline: when MINDSCAPE_APP_ROOTS is unset, and self-app is disabled,
+    # the apps list is empty.
     monkeypatch.delenv("MINDSCAPE_APP_ROOTS", raising=False)
+    monkeypatch.setenv("MINDSCAPE_INCLUDE_SELF_APP", "false")
 
     app = create_app()
     client = TestClient(app)
@@ -30,6 +32,26 @@ def test_apps_list_empty_when_not_configured(monkeypatch) -> None:
     assert payload["apps"] == []
     assert payload["source"]["env"] == "MINDSCAPE_APP_ROOTS"
     assert payload["source"]["configured"] is False
+    assert payload["source"]["count"] == 0
+
+
+def test_apps_list_includes_self_app_by_default(monkeypatch) -> None:
+    # Local/dev UX: with no Supabase and no MINDSCAPE_APP_ROOTS, the API should still include
+    # this Mindscape-AI instance so the UI dropdown isn't empty on first run.
+    monkeypatch.delenv("MINDSCAPE_APP_ROOTS", raising=False)
+    monkeypatch.delenv("MINDSCAPE_INCLUDE_SELF_APP", raising=False)
+
+    app = create_app()
+    client = TestClient(app)
+
+    resp = client.get("/api/v1/apps")
+    assert resp.status_code == 200
+
+    payload = resp.json()
+    assert payload["apps"] == [{"app_id": "mindscape-ai", "has_conport": True}]
+    assert payload["source"]["env"] == "MINDSCAPE_APP_ROOTS"
+    assert payload["source"]["configured"] is False
+    assert payload["source"]["count"] == 1
 
 
 def test_conport_now_ok_default_db() -> None:

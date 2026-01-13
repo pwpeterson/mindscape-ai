@@ -47,6 +47,8 @@ scripts/
 *.db-journal
 *.db-wal
 *.db-shm
+*.db.bak.*
+context_portal/context.db.bak.*
 *.rdb
 *.ldb
 crawler_data.db
