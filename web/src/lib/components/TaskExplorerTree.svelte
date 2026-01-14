@@ -34,6 +34,31 @@
 		}
 	}
 
+	function phaseMarker(status: string): string {
+		// Phase markers: 🟩 In progress, 🟦 Done, 🟨 Pending action
+		switch (status) {
+			case "IN_PROGRESS":
+				return "🟩";
+			case "DONE":
+				return "🟦";
+			case "TODO":
+			default:
+				return "🟨";
+		}
+	}
+
+	function phaseMarkerLabel(status: string): string {
+		switch (status) {
+			case "IN_PROGRESS":
+				return "Phase (In progress)";
+			case "DONE":
+				return "Phase (Done)";
+			case "TODO":
+			default:
+				return "Phase (Pending action)";
+		}
+	}
+
 	function indentStyle(): string {
 		// VS Code-ish: small base indent + fixed indent per level.
 		return `padding-left: ${0.75 + level * 1.0}rem;`;
@@ -76,10 +101,47 @@
 		);
 	}
 
+	// UI-only overrides for note classification.
+	// Requested: treat 29 as a task (child of 28) so its updates bubble into 28's Notes panel.
+	const UI_FORCE_TASK_IDS = new Set<number>([29]);
+
+	// UI-only overrides for how certain entries' status-update lines are rendered when
+	// aggregated into a parent's Notes subpanel.
+	// Requested: show 29's status updates *inside* 28's Notes without repeating the 29 title.
+	const UI_STATUS_ONLY_IDS = new Set<number>([29]);
+
+	function isNoteNode(node: ProgressTreeNode): boolean {
+		if (UI_FORCE_TASK_IDS.has(node.entry.id)) return false;
+		return isNoteDescription(node.entry.description);
+	}
+
+	function cleanStatusUpdateLine(line: string): string {
+		// Many status updates are stored like "— DONE ..."; normalize for display.
+		return line.replace(/^\s*[—–-]\s*/, "").trim();
+	}
+
 	function isPhaseDescription(description: string): boolean {
-		// Phase nodes look like: "Phase 1 — ..." (dash variants supported)
-		// Allow optional priority prefix like "[P1]".
-		return /^\s*(?:\[p\d+\]\s*)?phase\s+\d+\s*[—–-]/i.test(description);
+		// Phase nodes are intended to look like: "Phase 3 — ..." (dash variants supported)
+		// Notes look like: "Phase 3: ..." (colon) and should NOT be treated as phases.
+		//
+		// Avoid brittle matching on exact dash glyphs by:
+		// 1) Normalizing known prefixes ([P#], optional "P-###")
+		// 2) Matching "Phase <n>"
+		// 3) Inspecting the next character:
+		//    - reject ":" (note-style)
+		//    - reject letters/digits (e.g., "Phase 2 parent..." is not a phase node)
+		const cleaned = stripPriorityPrefix(description)
+			.trimStart()
+			.replace(/^p-\d+\s+/i, "");
+
+		const m = cleaned.match(/^phase\s+\d+\s*(.)/i);
+		if (!m) return false;
+
+		const next = m[1];
+		if (next === ":") return false;
+		if (/[a-z0-9]/i.test(next)) return false;
+
+		return true;
 	}
 
 	function splitChildren(children: ProgressTreeNode[]): {
@@ -90,7 +152,7 @@
 		const notes: ProgressTreeNode[] = [];
 
 		for (const c of children) {
-			if (isNoteDescription(c.entry.description)) notes.push(c);
+			if (isNoteNode(c)) notes.push(c);
 			else tasks.push(c);
 		}
 
@@ -117,19 +179,27 @@
 		const title =
 			inline.title || displayDescription(node.entry.description);
 		const ctx = `${noteContextPrefix(node)}${title}`.trim();
+		const statusOnly = UI_STATUS_ONLY_IDS.has(node.entry.id);
 
 		// 1) Inline multi-line notes from this node's description
 		for (let i = 0; i < inline.notes.length; i += 1) {
+			const cleaned = cleanStatusUpdateLine(inline.notes[i]);
+			if (!cleaned) continue;
+
 			out.push({
 				kind: "text",
 				key: `t:${node.entry.id}:${i}`,
-				text: ctx ? `${ctx}: ${inline.notes[i]}` : inline.notes[i],
+				text: statusOnly
+					? cleaned
+					: ctx
+						? `${ctx}: ${cleaned}`
+						: cleaned,
 			});
 		}
 
 		// 2) Explicit note-children (render as links)
 		for (const child of node.children) {
-			if (!isNoteDescription(child.entry.description)) continue;
+			if (!isNoteNode(child)) continue;
 			out.push({
 				kind: "link",
 				key: `l:${child.entry.id}`,
@@ -140,7 +210,7 @@
 
 		// 3) Recurse into task-children
 		for (const child of node.children) {
-			if (isNoteDescription(child.entry.description)) continue;
+			if (isNoteNode(child)) continue;
 			out.push(...collectAggregatedNotes(child));
 		}
 
@@ -230,9 +300,18 @@
 						class="flex items-center gap-2 rounded-md py-1 pr-2 text-sm text-gray-100 hover:bg-white/5"
 						style={indentStyle()}
 					>
-						<span
-							class={`inline-block h-2 w-2 shrink-0 rounded-full ${statusColor(node.entry.status)}`}
-						></span>
+						{#if isPhaseNode}
+							<span
+								class="shrink-0"
+								aria-hidden="true"
+								title={phaseMarkerLabel(node.entry.status)}
+								>{phaseMarker(node.entry.status)}</span
+							>
+						{:else}
+							<span
+								class={`inline-block h-2 w-2 shrink-0 rounded-full ${statusColor(node.entry.status)}`}
+							></span>
+						{/if}
 						<a
 							href={itemHref(node.entry.id)}
 							class="min-w-0 truncate hover:underline underline-offset-4 decoration-white/20 hover:decoration-white/60"
@@ -298,7 +377,7 @@
 						{/if}
 					</details>
 				{/if}
-			{:else if !isNoteDescription(node.entry.description)}
+			{:else if !isNoteNode(node)}
 				{#if isPhaseDescription(node.entry.description)}
 					<details
 						open={getPhaseOpen(node.entry.id, level < 1)}
@@ -309,8 +388,11 @@
 							style={indentStyle()}
 						>
 							<span
-								class={`inline-block h-2 w-2 shrink-0 rounded-full ${statusColor(node.entry.status)}`}
-							></span>
+								class="shrink-0"
+								aria-hidden="true"
+								title={phaseMarkerLabel(node.entry.status)}
+								>{phaseMarker(node.entry.status)}</span
+							>
 							<a
 								href={itemHref(node.entry.id)}
 								class="min-w-0 truncate hover:underline underline-offset-4 decoration-white/20 hover:decoration-white/60"

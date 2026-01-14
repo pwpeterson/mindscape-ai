@@ -16,6 +16,10 @@ Environment=MINDSCAPE_HOST=0.0.0.0
 # IMPORTANT: this is the *container* port; keep it aligned with Dockerfile EXPOSE (8000).
 Environment=MINDSCAPE_PORT=8000
 
+# Mount the host ConPort DB into the container so UI/API reflect local edits.
+# This repo is copied into /workspace in the image, so mount over that path.
+Volume=/home/pwp/srv/apps/mindscape-ai/context_portal:/workspace/context_portal:Z
+
 # Mem0 defaults to OpenAI providers; mem0 initialization will fail unless OPENAI_API_KEY is set.
 # To avoid committing secrets, put them in this optional file (note the leading '-' means "optional"):
 #   mkdir -p ~/.config/mindscape-ai

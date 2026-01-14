@@ -12,6 +12,7 @@ Design goals:
 
 from __future__ import annotations
 
+import copy
 import json
 import os
 from dataclasses import dataclass
@@ -225,11 +226,54 @@ def get_mem0_client() -> Any:
         settings = Mem0Settings.from_env()
         config_dict = settings.build_mem0_config()
 
-    logger.debug("Initializing mem0 with config: {}", json.dumps(config_dict, indent=2))
+    def _redact_secrets(value: Any) -> Any:
+        """Redact obvious secret-bearing keys from config before logging.
+
+        This avoids leaking API keys in debug logs.
+        """
+
+        if isinstance(value, dict):
+            redacted: dict[str, Any] = {}
+            for k, v in value.items():
+                lk = str(k).lower()
+                if lk in {"api_key", "apikey", "token", "password", "secret", "key"}:
+                    redacted[k] = "***REDACTED***"
+                else:
+                    redacted[k] = _redact_secrets(v)
+            return redacted
+        if isinstance(value, list):
+            return [_redact_secrets(v) for v in value]
+        return value
+
+    def _build_init_error_detail(config: dict[str, Any], exc: Exception) -> str:
+        base = f"Failed to initialize mem0 client: {exc}"
+
+        msg = str(exc)
+        if "Errno 111" in msg or "Connection refused" in msg:
+            vector_store = config.get("vector_store") if isinstance(config, dict) else None
+            if isinstance(vector_store, dict):
+                provider = vector_store.get("provider")
+                vcfg = vector_store.get("config")
+                if provider == "qdrant" and isinstance(vcfg, dict):
+                    host = vcfg.get("host", "localhost")
+                    port = vcfg.get("port", 6333)
+                    return (
+                        f"{base}. "
+                        f"Qdrant appears unreachable at {host}:{port}. "
+                        "Start Qdrant, or switch to another vector store via MEM0_* env vars "
+                        "or MINDSCAPE_MEM0_CONFIG_JSON/MEM0_CONFIG_JSON."
+                    )
+
+        return base
+
+    logger.debug(
+        "Initializing mem0 with config: {}",
+        json.dumps(_redact_secrets(copy.deepcopy(config_dict)), indent=2),
+    )
 
     try:
         _client = Memory.from_config(config_dict=config_dict)
     except Exception as exc:  # noqa: BLE001
-        raise Mem0UnavailableError(f"Failed to initialize mem0 client: {exc}") from exc
+        raise Mem0UnavailableError(_build_init_error_detail(config_dict, exc)) from exc
 
     return _client

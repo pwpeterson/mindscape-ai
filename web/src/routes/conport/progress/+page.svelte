@@ -53,6 +53,60 @@
         return description.trim().replace(/^\[p\d+\]\s*/i, "");
     }
 
+    function stripPriorityPrefix(description: string): string {
+        // Hide the [P#] prefix in the UI, but keep it in the stored ConPort description.
+        return description.replace(/^\s*\[p\d+\]\s*/i, "");
+    }
+
+    function isPhaseDescription(description: string): boolean {
+        // Phase nodes are intended to look like: "Phase 3 — ..." (dash variants supported)
+        // Notes look like: "Phase 3: ..." (colon) and should NOT be treated as phases.
+        //
+        // Avoid brittle matching on exact dash glyphs by:
+        // 1) Normalizing known prefixes ([P#], optional "P-###")
+        // 2) Matching "Phase <n>"
+        // 3) Inspecting the next character:
+        //    - reject ":" (note-style)
+        //    - reject letters/digits (e.g., "Phase 2 parent..." is not a phase node)
+        const cleaned = stripPriorityPrefix(description)
+            .trimStart()
+            .replace(/^p-\d+\s+/i, "");
+
+        const m = cleaned.match(/^phase\s+\d+\s*(.)/i);
+        if (!m) return false;
+
+        const next = m[1];
+        if (next === ":") return false;
+        if (/[a-z0-9]/i.test(next)) return false;
+
+        return true;
+    }
+
+    function phaseMarker(statusValue: string): string {
+        // Phase markers: 🟩 In progress, 🟦 Done, 🟨 Pending action
+        switch (statusValue) {
+            case "IN_PROGRESS":
+                return "🟩";
+            case "DONE":
+                return "🟦";
+            case "TODO":
+            default:
+                return "🟨";
+        }
+    }
+
+    function phaseMarkerLabel(statusValue: string): string {
+        switch (statusValue) {
+            case "IN_PROGRESS":
+                return "Phase (In progress)";
+            case "DONE":
+                return "Phase (Done)";
+            case "TODO":
+            default:
+                return "Phase (Pending action)";
+        }
+    }
+
     function statusDotColor(statusValue: string): string {
         switch (statusValue) {
             case "DONE":
@@ -498,9 +552,18 @@
                                 <li
                                     style="display: flex; gap: 8px; align-items: baseline;"
                                 >
-                                    <span
-                                        style={`display: inline-block; width: 8px; height: 8px; border-radius: 999px; background: ${statusDotColor(e.status)}; flex: 0 0 auto; margin-top: 5px;`}
-                                    ></span>
+                                    {#if isPhaseDescription(e.description)}
+                                        <span
+                                            aria-hidden="true"
+                                            title={phaseMarkerLabel(e.status)}
+                                            style="flex: 0 0 auto; margin-top: 2px;"
+                                            >{phaseMarker(e.status)}</span
+                                        >
+                                    {:else}
+                                        <span
+                                            style={`display: inline-block; width: 8px; height: 8px; border-radius: 999px; background: ${statusDotColor(e.status)}; flex: 0 0 auto; margin-top: 5px;`}
+                                        ></span>
+                                    {/if}
                                     <a
                                         href={progressItemHref(e.id)}
                                         style="text-decoration: none;"
@@ -546,9 +609,18 @@
                                 <li
                                     style="display: flex; gap: 8px; align-items: baseline;"
                                 >
-                                    <span
-                                        style={`display: inline-block; width: 8px; height: 8px; border-radius: 999px; background: ${statusDotColor(e.status)}; flex: 0 0 auto; margin-top: 5px;`}
-                                    ></span>
+                                    {#if isPhaseDescription(e.description)}
+                                        <span
+                                            aria-hidden="true"
+                                            title={phaseMarkerLabel(e.status)}
+                                            style="flex: 0 0 auto; margin-top: 2px;"
+                                            >{phaseMarker(e.status)}</span
+                                        >
+                                    {:else}
+                                        <span
+                                            style={`display: inline-block; width: 8px; height: 8px; border-radius: 999px; background: ${statusDotColor(e.status)}; flex: 0 0 auto; margin-top: 5px;`}
+                                        ></span>
+                                    {/if}
                                     <a
                                         href={progressItemHref(e.id)}
                                         style="text-decoration: none;"
@@ -594,9 +666,18 @@
                                 <li
                                     style="display: flex; gap: 8px; align-items: baseline;"
                                 >
-                                    <span
-                                        style={`display: inline-block; width: 8px; height: 8px; border-radius: 999px; background: ${statusDotColor(e.status)}; flex: 0 0 auto; margin-top: 5px;`}
-                                    ></span>
+                                    {#if isPhaseDescription(e.description)}
+                                        <span
+                                            aria-hidden="true"
+                                            title={phaseMarkerLabel(e.status)}
+                                            style="flex: 0 0 auto; margin-top: 2px;"
+                                            >{phaseMarker(e.status)}</span
+                                        >
+                                    {:else}
+                                        <span
+                                            style={`display: inline-block; width: 8px; height: 8px; border-radius: 999px; background: ${statusDotColor(e.status)}; flex: 0 0 auto; margin-top: 5px;`}
+                                        ></span>
+                                    {/if}
                                     <a
                                         href={progressItemHref(e.id)}
                                         style="text-decoration: none;"
@@ -642,7 +723,17 @@
                             <td
                                 style="padding: 8px 0; border-bottom: 1px solid rgba(255,255,255,0.08);"
                             >
-                                <div style="font-weight: 600;">
+                                <div
+                                    style="font-weight: 600; display: flex; gap: 6px; align-items: baseline;"
+                                >
+                                    {#if isPhaseDescription(e.description)}
+                                        <span
+                                            aria-hidden="true"
+                                            title={phaseMarkerLabel(e.status)}
+                                            style="flex: 0 0 auto;"
+                                            >{phaseMarker(e.status)}</span
+                                        >
+                                    {/if}
                                     <a
                                         href={progressItemHref(e.id)}
                                         style="text-decoration: none;"
