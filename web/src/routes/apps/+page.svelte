@@ -388,7 +388,9 @@
                     <table class="w-full text-sm">
                         <thead class="text-xs text-gray-300/80">
                             <tr class="border-b border-white/10">
-                                <th class="text-left py-2 pr-3">app_id</th>
+                                <th class="text-left py-2 pr-3 min-w-[12rem]">
+                                    app_id
+                                </th>
                                 <th class="text-left py-2 pr-3">display_name</th
                                 >
                                 <th class="text-left py-2 pr-3 w-1/2"
@@ -404,7 +406,8 @@
                             {#each apps as a (a.app_id)}
                                 {@const row = ensureRowState(a.app_id)}
                                 <tr class="border-b border-white/10 align-top">
-                                    <td class="py-3 pr-3 font-mono text-xs"
+                                    <td
+                                        class="py-3 pr-3 font-mono text-xs whitespace-nowrap min-w-[12rem]"
                                         >{a.app_id}</td
                                     >
 
