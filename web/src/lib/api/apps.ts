@@ -14,6 +14,19 @@ export type MindscapeApp = {
     has_conport: boolean;
 };
 
+/**
+ * Full registry row for the Apps Manager panel. This is backed by Supabase
+ * `mindscape_ai_apps` (via GET /api/v1/apps/registry) and includes `root_path`.
+ */
+export type MindscapeAppRegistry = {
+    app_id: string;
+    display_name: string | null;
+    enabled: boolean;
+    sort_order: number;
+    root_path: string;
+    has_conport: boolean;
+};
+
 export type AppsListSource =
     | {
         type: 'supabase';
@@ -29,6 +42,11 @@ export type AppsListSource =
 
 export type AppsListResponse = {
     apps: MindscapeAppSummary[];
+    source: AppsListSource;
+};
+
+export type AppsRegistryResponse = {
+    apps: MindscapeAppRegistry[];
     source: AppsListSource;
 };
 
@@ -119,6 +137,10 @@ async function getJson<T>(
 
 export async function listApps(fetchFn: FetchLike): Promise<AppsListResponse> {
     return getJson(fetchFn, buildUrl('/api/v1/apps'));
+}
+
+export async function listAppsRegistry(fetchFn: FetchLike): Promise<AppsRegistryResponse> {
+    return getJson(fetchFn, buildUrl('/api/v1/apps/registry'));
 }
 
 export async function createApp(fetchFn: FetchLike, req: CreateAppRequest): Promise<{ app: MindscapeApp }> {

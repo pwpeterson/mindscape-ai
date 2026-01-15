@@ -18,6 +18,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+import httpx
+
 from mindscape_ai.supabase.client import SupabaseUnavailableError, get_supabase_client
 
 
@@ -33,6 +35,21 @@ class MindscapeApp:
     display_name: str | None
     enabled: bool
     sort_order: int
+    has_conport: bool
+
+
+@dataclass(frozen=True)
+class MindscapeAppRegistry:
+    """App record for the Apps Manager UI (includes paths from the registry table).
+
+    NOTE: This is intended for the admin/manager panel where showing `root_path` is useful.
+    """
+
+    app_id: str
+    display_name: str | None
+    enabled: bool
+    sort_order: int
+    root_path: str
     has_conport: bool
 
 
@@ -91,6 +108,17 @@ def _internal_to_public(app: MindscapeAppInternal) -> MindscapeApp:
     )
 
 
+def _internal_to_registry(app: MindscapeAppInternal) -> MindscapeAppRegistry:
+    return MindscapeAppRegistry(
+        app_id=app.app_id,
+        display_name=app.display_name,
+        enabled=app.enabled,
+        sort_order=app.sort_order,
+        root_path=str(app.root_path.expanduser().resolve()),
+        has_conport=_has_conport_db(app.root_path),
+    )
+
+
 def list_apps_from_supabase(*, include_disabled: bool = False) -> list[MindscapeApp]:
     """List apps from Supabase for use in the UI dropdown."""
     client = get_supabase_client()
@@ -103,7 +131,13 @@ def list_apps_from_supabase(*, include_disabled: bool = False) -> list[Mindscape
         query = query.eq("enabled", True)
 
     # Stable ordering
-    resp = query.order("sort_order", desc=False).order("app_id", desc=False).execute()
+    try:
+        resp = query.order("sort_order", desc=False).order("app_id", desc=False).execute()
+    except httpx.HTTPError as exc:
+        # Treat connectivity issues (DNS, refused, timeouts) as "Supabase unavailable" so API
+        # routes can fall back to legacy app discovery instead of returning 500.
+        raise SupabaseUnavailableError("Supabase is unreachable (apps registry).") from exc
+
     data = getattr(resp, "data", None)
 
     if not isinstance(data, list):
@@ -113,6 +147,33 @@ def list_apps_from_supabase(*, include_disabled: bool = False) -> list[Mindscape
     return [_internal_to_public(a) for a in out_internal]
 
 
+def list_apps_registry_from_supabase(*, include_disabled: bool = True) -> list[MindscapeAppRegistry]:
+    """List full app registry rows (including root_path) from Supabase.
+
+    Intended for the Apps Manager panel (admin-ish UI), not for the global dropdown.
+    """
+    client = get_supabase_client()
+
+    query = client.table("mindscape_ai_apps").select(
+        "app_id,display_name,enabled,sort_order,root_path"
+    )
+
+    if not include_disabled:
+        query = query.eq("enabled", True)
+
+    try:
+        resp = query.order("sort_order", desc=False).order("app_id", desc=False).execute()
+    except httpx.HTTPError as exc:
+        raise SupabaseUnavailableError("Supabase is unreachable (apps registry).") from exc
+
+    data = getattr(resp, "data", None)
+    if not isinstance(data, list):
+        raise AppStoreError("Unexpected response from Supabase apps list")
+
+    out_internal = [_row_to_internal(r) for r in data if isinstance(r, dict)]
+    return [_internal_to_registry(a) for a in out_internal]
+
+
 def resolve_conport_db_path_from_supabase(app_id: str) -> Path:
     """Resolve `app_id` -> <root_path>/context_portal/context.db.
 
@@ -120,13 +181,16 @@ def resolve_conport_db_path_from_supabase(app_id: str) -> Path:
     """
     client = get_supabase_client()
 
-    resp = (
-        client.table("mindscape_ai_apps")
-        .select("app_id,root_path,enabled")
-        .eq("app_id", app_id)
-        .limit(1)
-        .execute()
-    )
+    try:
+        resp = (
+            client.table("mindscape_ai_apps")
+            .select("app_id,root_path,enabled")
+            .eq("app_id", app_id)
+            .limit(1)
+            .execute()
+        )
+    except httpx.HTTPError as exc:
+        raise SupabaseUnavailableError("Supabase is unreachable (apps lookup).") from exc
 
     data = getattr(resp, "data", None)
     if not isinstance(data, list) or not data:
@@ -171,7 +235,10 @@ def create_app_in_supabase(
     if display_name is not None:
         payload["display_name"] = display_name
 
-    resp = client.table("mindscape_ai_apps").insert(payload).execute()
+    try:
+        resp = client.table("mindscape_ai_apps").insert(payload).execute()
+    except httpx.HTTPError as exc:
+        raise SupabaseUnavailableError("Supabase is unreachable (apps insert).") from exc
     data = getattr(resp, "data", None)
 
     if not isinstance(data, list) or not data:
@@ -196,7 +263,10 @@ def update_app_in_supabase(
     if not allowed:
         raise AppStoreError("No supported fields to update")
 
-    resp = client.table("mindscape_ai_apps").update(allowed).eq("app_id", app_id).execute()
+    try:
+        resp = client.table("mindscape_ai_apps").update(allowed).eq("app_id", app_id).execute()
+    except httpx.HTTPError as exc:
+        raise SupabaseUnavailableError("Supabase is unreachable (apps update).") from exc
     data = getattr(resp, "data", None)
 
     if not isinstance(data, list) or not data:
@@ -208,7 +278,10 @@ def update_app_in_supabase(
 
 def delete_app_in_supabase(*, app_id: str) -> int:
     client = get_supabase_client()
-    resp = client.table("mindscape_ai_apps").delete().eq("app_id", app_id).execute()
+    try:
+        resp = client.table("mindscape_ai_apps").delete().eq("app_id", app_id).execute()
+    except httpx.HTTPError as exc:
+        raise SupabaseUnavailableError("Supabase is unreachable (apps delete).") from exc
     data = getattr(resp, "data", None)
 
     # supabase-py returns deleted rows in data; count them.
@@ -220,10 +293,12 @@ def delete_app_in_supabase(*, app_id: str) -> int:
 __all__ = [
     "AppStoreError",
     "MindscapeApp",
+    "MindscapeAppRegistry",
     "SupabaseUnavailableError",
     "create_app_in_supabase",
     "delete_app_in_supabase",
     "list_apps_from_supabase",
+    "list_apps_registry_from_supabase",
     "resolve_conport_db_path_from_supabase",
     "update_app_in_supabase",
 ]

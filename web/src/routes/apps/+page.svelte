@@ -3,9 +3,9 @@
     import {
         createApp,
         deleteApp,
-        listApps,
+        listAppsRegistry,
         patchApp,
-        type AppsListResponse,
+        type AppsRegistryResponse,
         type CreateAppRequest,
     } from "$lib/api/apps";
     import { onMount } from "svelte";
@@ -14,7 +14,8 @@
         display_name: string;
         sort_order: number;
         enabled: boolean;
-        // For safety, we don’t display an existing root_path; user can optionally set a new one.
+        // Current root_path from registry + editable root_path (shown in input)
+        root_path_original: string;
         root_path: string;
         saving: boolean;
         error: string | null;
@@ -22,9 +23,9 @@
 
     let loading = $state(false);
     let error = $state<string | null>(null);
-    let source = $state<AppsListResponse["source"] | null>(null);
+    let source = $state<AppsRegistryResponse["source"] | null>(null);
 
-    let apps = $state<AppsListResponse["apps"]>([]);
+    let apps = $state<AppsRegistryResponse["apps"]>([]);
     let edits = $state<Record<string, RowEditState>>({});
 
     let creating = $state(false);
@@ -59,6 +60,7 @@
                     display_name: "",
                     sort_order: 0,
                     enabled: true,
+                    root_path_original: "",
                     root_path: "",
                     saving: false,
                     error: null,
@@ -79,32 +81,28 @@
         loading = true;
         error = null;
         try {
-            const resp = await listApps(fetch);
+            const resp = await listAppsRegistry(fetch);
             apps = resp.apps;
             source = resp.source;
 
-            // Initialize edit state with whatever fields the list endpoint returns.
-            // (Some deployments may only return app_id/has_conport.)
+            // Sensible default: new apps appended after existing ones.
+            // Only set when the user hasn't started entering a custom sort order.
+            if (!creating && Number(form_sort_order) === 0) {
+                form_sort_order = apps.length + 1;
+            }
+
+            // Initialize edit state from the Supabase registry response (all fields present).
             for (const a of apps) {
-                const row = ensureRowState(a.app_id);
-
-                // optional fields if present (future-proof)
-                const maybe = a as unknown as {
-                    display_name?: string | null;
-                    enabled?: boolean;
-                    sort_order?: number;
-                };
-
                 setRow(a.app_id, {
-                    display_name: maybe.display_name ?? row.display_name,
-                    enabled:
-                        typeof maybe.enabled === "boolean"
-                            ? maybe.enabled
-                            : row.enabled,
-                    sort_order:
-                        typeof maybe.sort_order === "number"
-                            ? maybe.sort_order
-                            : row.sort_order,
+                    display_name:
+                        typeof a.display_name === "string" &&
+                        a.display_name.trim()
+                            ? a.display_name
+                            : a.app_id,
+                    enabled: Boolean(a.enabled),
+                    sort_order: Number(a.sort_order),
+                    root_path_original: String(a.root_path ?? ""),
+                    root_path: String(a.root_path ?? ""),
                     error: null,
                 });
             }
@@ -123,7 +121,8 @@
         try {
             const req: CreateAppRequest = {
                 app_id: form_app_id.trim(),
-                display_name: form_display_name.trim() || null,
+                // UX: default display_name to app_id when omitted
+                display_name: form_display_name.trim() || form_app_id.trim(),
                 root_path: form_root_path.trim(),
                 enabled: Boolean(form_enabled),
                 sort_order: Number(form_sort_order),
@@ -155,13 +154,14 @@
                 sort_order: Number(row.sort_order),
             };
 
-            // Optional root_path update only when user provides one.
-            if (row.root_path.trim()) {
-                patch.root_path = row.root_path.trim();
+            // Only update root_path when it actually changes.
+            const nextRoot = row.root_path.trim();
+            const prevRoot = row.root_path_original.trim();
+            if (nextRoot && nextRoot !== prevRoot) {
+                patch.root_path = nextRoot;
             }
 
             await patchApp(fetch, app_id, patch);
-            setRow(app_id, { root_path: "" }); // clear after applying
 
             await refresh();
         } catch (err) {
@@ -236,102 +236,126 @@
 
     <div class="grid grid-cols-1 gap-6 mt-6">
         <section class="card">
-            <div class="text-sm font-semibold text-gray-100">Create app</div>
-            <div class="text-xs text-gray-300/80 mt-1">
-                Note: <code>root_path</code> is sensitive, but required to resolve
-                ConPort DB paths.
+            <div class="flex items-center justify-between gap-4">
+                <div>
+                    <div class="text-sm font-semibold text-gray-100">
+                        Create app
+                    </div>
+                    <div class="text-xs text-gray-300/80 mt-1">
+                        Note: <code>root_path</code> is sensitive, but required to
+                        resolve ConPort DB paths.
+                    </div>
+                </div>
             </div>
 
             <form
-                class="mt-4 grid grid-cols-1 md:grid-cols-2 gap-4"
+                class="mt-4 overflow-x-auto"
                 onsubmit={(e) => (e.preventDefault(), submitCreate())}
             >
-                <div>
-                    <label class="text-xs text-gray-300/80" for="create-app-id"
-                        >app_id</label
-                    >
-                    <input
-                        id="create-app-id"
-                        class="mt-1 w-full rounded-md border border-white/10 bg-black/30 px-3 py-2 text-sm text-gray-100"
-                        placeholder="mindscape-ai"
-                        bind:value={form_app_id}
-                        disabled={creating}
-                    />
-                </div>
+                <table class="w-full text-sm">
+                    <thead class="text-xs text-gray-300/80">
+                        <tr class="border-b border-white/10">
+                            <th class="text-left py-2 pr-3">app_id</th>
+                            <th class="text-left py-2 pr-3">display_name</th>
+                            <th class="text-left py-2 pr-3">root_path</th>
+                            <th class="text-left py-2 pr-3">enabled</th>
+                            <th class="text-left py-2 pr-3">sort_order</th>
+                            <th class="text-right py-2">actions</th>
+                        </tr>
+                    </thead>
 
-                <div>
-                    <label
-                        class="text-xs text-gray-300/80"
-                        for="create-display-name">display_name (optional)</label
-                    >
-                    <input
-                        id="create-display-name"
-                        class="mt-1 w-full rounded-md border border-white/10 bg-black/30 px-3 py-2 text-sm text-gray-100"
-                        placeholder="Mindscape AI"
-                        bind:value={form_display_name}
-                        disabled={creating}
-                    />
-                </div>
+                    <tbody>
+                        <tr class="border-b border-white/10 align-top">
+                            <td class="py-3 pr-3">
+                                <label class="sr-only" for="create-app-id"
+                                    >app_id</label
+                                >
+                                <input
+                                    id="create-app-id"
+                                    class="w-[70%] rounded-md border border-white/10 bg-black/30 px-2 py-1 text-sm text-gray-100 font-mono"
+                                    placeholder=""
+                                    bind:value={form_app_id}
+                                    disabled={creating}
+                                />
+                            </td>
 
-                <div class="md:col-span-2">
-                    <label
-                        class="text-xs text-gray-300/80"
-                        for="create-root-path">root_path</label
-                    >
-                    <input
-                        id="create-root-path"
-                        class="mt-1 w-full rounded-md border border-white/10 bg-black/30 px-3 py-2 text-sm text-gray-100"
-                        placeholder="/home/pwp/srv/apps/mindscape-ai"
-                        bind:value={form_root_path}
-                        disabled={creating}
-                    />
-                </div>
+                            <td class="py-3 pr-3">
+                                <label class="sr-only" for="create-display-name"
+                                    >display_name</label
+                                >
+                                <input
+                                    id="create-display-name"
+                                    class="w-[60%] rounded-md border border-white/10 bg-black/30 px-2 py-1 text-sm text-gray-100"
+                                    placeholder=""
+                                    bind:value={form_display_name}
+                                    disabled={creating}
+                                />
+                            </td>
 
-                <div class="flex items-center gap-3">
-                    <label class="text-xs text-gray-300/80" for="create-enabled"
-                        >enabled</label
-                    >
-                    <input
-                        id="create-enabled"
-                        type="checkbox"
-                        bind:checked={form_enabled}
-                        disabled={creating}
-                    />
-                </div>
+                            <td class="py-3 pr-3">
+                                <label class="sr-only" for="create-root-path"
+                                    >root_path</label
+                                >
+                                <input
+                                    id="create-root-path"
+                                    class="w-[75%] rounded-md border border-white/10 bg-black/30 px-2 py-1 text-sm text-gray-100"
+                                    placeholder=""
+                                    bind:value={form_root_path}
+                                    disabled={creating}
+                                />
+                            </td>
 
-                <div>
-                    <label
-                        class="text-xs text-gray-300/80"
-                        for="create-sort-order">sort_order</label
-                    >
-                    <input
-                        id="create-sort-order"
-                        class="mt-1 w-full rounded-md border border-white/10 bg-black/30 px-3 py-2 text-sm text-gray-100"
-                        type="number"
-                        bind:value={form_sort_order}
-                        disabled={creating}
-                    />
-                </div>
+                            <td class="py-3 pr-3">
+                                <label class="sr-only" for="create-enabled"
+                                    >enabled</label
+                                >
+                                <input
+                                    id="create-enabled"
+                                    type="checkbox"
+                                    bind:checked={form_enabled}
+                                    disabled={creating}
+                                />
+                            </td>
 
-                <div class="md:col-span-2 flex items-center gap-3">
-                    <button
-                        class="text-sm px-3 py-2 rounded-md border border-white/10 bg-white/10 text-gray-100 hover:bg-white/15"
-                        disabled={creating ||
-                            !form_app_id.trim() ||
-                            !form_root_path.trim()}
-                        type="submit"
-                    >
-                        {creating ? "Creating…" : "Create"}
-                    </button>
+                            <td class="py-3 pr-3">
+                                <label class="sr-only" for="create-sort-order"
+                                    >sort_order</label
+                                >
+                                <input
+                                    id="create-sort-order"
+                                    class="w-24 rounded-md border border-white/10 bg-black/30 px-2 py-1 text-sm text-gray-100"
+                                    type="number"
+                                    bind:value={form_sort_order}
+                                    disabled={creating}
+                                />
+                            </td>
 
-                    {#if createError}
-                        <div
-                            class="text-xs text-red-200/90 whitespace-pre-wrap"
-                        >
-                            {createError}
-                        </div>
-                    {/if}
-                </div>
+                            <td class="py-3 text-right">
+                                <button
+                                    class="text-xs px-2 py-1 rounded-md border border-white/10 bg-white/5 text-gray-200 hover:bg-white/10"
+                                    disabled={creating ||
+                                        !form_app_id.trim() ||
+                                        !form_root_path.trim()}
+                                    type="submit"
+                                >
+                                    {creating ? "Creating…" : "Create"}
+                                </button>
+                            </td>
+                        </tr>
+
+                        {#if createError}
+                            <tr class="border-b border-white/10">
+                                <td colspan="6" class="py-3">
+                                    <div
+                                        class="text-xs text-red-200/90 whitespace-pre-wrap"
+                                    >
+                                        {createError}
+                                    </div>
+                                </td>
+                            </tr>
+                        {/if}
+                    </tbody>
+                </table>
             </form>
         </section>
 
@@ -367,6 +391,7 @@
                                 <th class="text-left py-2 pr-3">app_id</th>
                                 <th class="text-left py-2 pr-3">display_name</th
                                 >
+                                <th class="text-left py-2 pr-3">root_path</th>
                                 <th class="text-left py-2 pr-3">enabled</th>
                                 <th class="text-left py-2 pr-3">sort_order</th>
                                 <th class="text-left py-2 pr-3">has_conport</th>
@@ -383,18 +408,16 @@
 
                                     <td class="py-3 pr-3">
                                         <input
-                                            class="w-full rounded-md border border-white/10 bg-black/30 px-2 py-1 text-sm text-gray-100"
+                                            class="w-[60%] rounded-md border border-white/10 bg-black/30 px-2 py-1 text-sm text-gray-100"
                                             bind:value={row.display_name}
                                             disabled={row.saving}
                                         />
-                                        <div
-                                            class="text-[11px] text-gray-300/60 mt-1"
-                                        >
-                                            root_path (optional update):
-                                        </div>
+                                    </td>
+
+                                    <td class="py-3 pr-3">
                                         <input
-                                            class="w-full rounded-md border border-white/10 bg-black/30 px-2 py-1 text-sm text-gray-100 mt-1"
-                                            placeholder="(leave blank to keep unchanged)"
+                                            class="w-[50%] rounded-md border border-white/10 bg-black/30 px-2 py-1 text-sm text-gray-100"
+                                            placeholder="/home/pwp/srv/mcps/mem0-mcp"
                                             bind:value={row.root_path}
                                             disabled={row.saving}
                                         />

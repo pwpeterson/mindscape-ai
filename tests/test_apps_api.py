@@ -15,9 +15,13 @@ def _client() -> TestClient:
     return TestClient(app)
 
 
-def test_apps_list_falls_back_to_env_when_supabase_unavailable(monkeypatch: pytest.MonkeyPatch) -> None:
-    # Supabase path is preferred; if unavailable we fall back to MINDSCAPE_APP_ROOTS.
-    # Disable the "self app" convenience so we can assert the strict fail-closed baseline.
+def test_apps_list_falls_back_to_env_when_supabase_unavailable(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    # Supabase path is preferred; if unavailable we fall back to local SQLite registry first,
+    # then MINDSCAPE_APP_ROOTS.
+    #
+    # Disable the "self app" convenience so we can assert a strict empty baseline.
     import mindscape_ai.api.routes.apps as apps_routes
 
     monkeypatch.setattr(
@@ -28,22 +32,27 @@ def test_apps_list_falls_back_to_env_when_supabase_unavailable(monkeypatch: pyte
     monkeypatch.delenv("MINDSCAPE_APP_ROOTS", raising=False)
     monkeypatch.setenv("MINDSCAPE_INCLUDE_SELF_APP", "false")
 
+    # Make the test hermetic: don't read the real workspace registry.
+    monkeypatch.setenv("MINDSCAPE_APPS_SQLITE_DB", str(tmp_path / "apps_registry.db"))
+
     client = _client()
     resp = client.get("/api/v1/apps")
     assert resp.status_code == 200
 
     payload = resp.json()
     assert payload["apps"] == []
-    assert payload["source"]["configured"] is False
-    assert payload["source"]["env"] == "MINDSCAPE_APP_ROOTS"
+    assert payload["source"]["configured"] is True
+    assert payload["source"]["env"] == "MINDSCAPE_APPS_SQLITE_DB"
     assert payload["source"]["count"] == 0
 
 
 def test_apps_list_includes_self_app_when_not_configured_by_default(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     # Local/dev UX: even without Supabase + MINDSCAPE_APP_ROOTS, the API should include
     # this Mindscape-AI instance so the UI dropdown isn't empty.
+    #
+    # Additionally, the API now prefers the local SQLite registry as a fallback source.
     import mindscape_ai.api.routes.apps as apps_routes
 
     monkeypatch.setattr(
@@ -53,6 +62,9 @@ def test_apps_list_includes_self_app_when_not_configured_by_default(
     )
     monkeypatch.delenv("MINDSCAPE_APP_ROOTS", raising=False)
     monkeypatch.delenv("MINDSCAPE_INCLUDE_SELF_APP", raising=False)
+
+    # Make the test hermetic: don't read the real workspace registry.
+    monkeypatch.setenv("MINDSCAPE_APPS_SQLITE_DB", str(tmp_path / "apps_registry.db"))
 
     # Make the test deterministic: force the "no local ConPort DB yet" scenario.
     monkeypatch.setattr(
@@ -68,12 +80,14 @@ def test_apps_list_includes_self_app_when_not_configured_by_default(
     payload = resp.json()
     # ConPort DB may not be initialized yet; the implicit self app should still appear.
     assert payload["apps"] == [{"app_id": "mindscape-ai", "has_conport": False}]
-    assert payload["source"]["configured"] is False
-    assert payload["source"]["env"] == "MINDSCAPE_APP_ROOTS"
+    assert payload["source"]["configured"] is True
+    assert payload["source"]["env"] == "MINDSCAPE_APPS_SQLITE_DB"
     assert payload["source"]["count"] == 1
 
 
-def test_apps_list_uses_supabase_when_available(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_apps_list_uses_supabase_when_available(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
     import mindscape_ai.api.routes.apps as apps_routes
 
     monkeypatch.setattr(
@@ -89,6 +103,9 @@ def test_apps_list_uses_supabase_when_available(monkeypatch: pytest.MonkeyPatch)
             )
         ],
     )
+
+    # Make the test hermetic: don't read the real workspace registry (which may contain apps).
+    monkeypatch.setenv("MINDSCAPE_APPS_SQLITE_DB", str(tmp_path / "apps_registry.db"))
 
     client = _client()
     resp = client.get("/api/v1/apps")

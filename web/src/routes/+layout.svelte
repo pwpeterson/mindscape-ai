@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { goto } from "$app/navigation";
+	import { goto, invalidateAll } from "$app/navigation";
 	import { page } from "$app/stores";
 	import { listApps, type MindscapeAppSummary } from "$lib/api/apps";
 	import favicon from "$lib/assets/favicon.svg";
@@ -12,6 +12,10 @@
 	let apps = $state<MindscapeAppSummary[]>([]);
 	let appsLoading = $state(false);
 	let appsError = $state<string | null>(null);
+
+	// Used to force a re-mount of the current page subtree on demand.
+	// This ensures pages that fetch in onMount() will refetch when scope changes.
+	let reloadNonce = $state(0);
 
 	function withScope(path: string): string {
 		const app_id = $page.url.searchParams.get("app_id");
@@ -36,6 +40,16 @@
 		return $page.url.searchParams.get("app_id") ?? "";
 	}
 
+	function currentScopeKey(): string {
+		return `${$page.url.pathname}${$page.url.search}`;
+	}
+
+	function pageRemountKey(): string {
+		// Changing app_id changes $page.url.search, which will remount.
+		// Pressing reload bumps reloadNonce, which also remounts.
+		return `${currentScopeKey()}|${reloadNonce}`;
+	}
+
 	async function refreshApps() {
 		appsLoading = true;
 		appsError = null;
@@ -48,6 +62,11 @@
 		} finally {
 			appsLoading = false;
 		}
+	}
+
+	async function reloadUi() {
+		reloadNonce += 1;
+		await Promise.all([refreshApps(), invalidateAll()]);
 	}
 
 	function onAppChange(e: Event) {
@@ -161,7 +180,8 @@
 				<button
 					class="text-xs px-2 py-1 rounded-md border border-white/10 bg-white/5 text-gray-200 hover:bg-white/10"
 					disabled={appsLoading}
-					onclick={() => refreshApps()}
+					onclick={() => void reloadUi()}
+					title="Reload the current view for the selected app"
 				>
 					{appsLoading ? "Loading…" : "Reload"}
 				</button>
@@ -183,6 +203,8 @@
 	</header>
 
 	<main>
-		{@render children()}
+		{#key pageRemountKey()}
+			{@render children()}
+		{/key}
 	</main>
 </div>

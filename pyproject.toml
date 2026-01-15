@@ -28,6 +28,9 @@ dependencies = [
     "uvicorn[standard]>=0.30.0",
     "httpx>=0.28.1",
     "aiosqlite>=0.20.0",
+
+    # Supabase-backed apps registry (server-side)
+    "supabase==2.15.1",
 ]
 
 [project.optional-dependencies]

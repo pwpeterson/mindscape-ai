@@ -35,8 +35,10 @@ Environment variables (used by resources only):
 from __future__ import annotations
 
 import os
+from functools import partial
 from typing import Any
 
+from anyio import to_thread
 from fastapi import HTTPException
 from fastmcp import FastMCP
 
@@ -46,6 +48,7 @@ from mindscape_ai.api.routes.conport import conport_search as _conport_search
 from mindscape_ai.api.routes.mem0 import mem0_search as _mem0_search
 from mindscape_ai.api.routes.prompts import prompts_files as _prompts_files
 from mindscape_ai.api.routes.tokens import tokens_breakdown as _tokens_breakdown
+from mindscape_ai.apps.sqlite_store import create_app_in_sqlite
 
 mcp = FastMCP(name="Mindscape-AI")
 
@@ -197,6 +200,27 @@ async def tool_add_app(
 
     try:
         return await _apps_create_app(payload=payload)
+    except HTTPException as exc:
+        # Robust fallback: if Supabase is unavailable/misconfigured, write to local SQLite registry
+        # so `add_app` remains usable for local/dev deployments.
+        if exc.status_code == 503 and isinstance(exc.detail, str) and "Supabase is not configured" in exc.detail:
+            try:
+                created = await to_thread.run_sync(
+                    partial(
+                        create_app_in_sqlite,
+                        app_id=app_id,
+                        root_path=root_path,
+                        display_name=display_name,
+                        enabled=enabled,
+                        sort_order=sort_order,
+                    )
+                )
+                return {"app": created.__dict__}
+            except Exception as exc2:  # noqa: BLE001
+                _raise_as_runtime(exc2)
+                raise
+        _raise_as_runtime(exc)
+        raise
     except Exception as exc:  # noqa: BLE001
         _raise_as_runtime(exc)
         raise

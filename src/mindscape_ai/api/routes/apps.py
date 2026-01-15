@@ -29,6 +29,7 @@ from mindscape_ai.apps.registry import (
     normalize_app_roots,
     read_app_id_from_pyproject,
 )
+from mindscape_ai.apps.sqlite_store import list_apps_from_sqlite
 from mindscape_ai.apps.supabase_store import (
     AppStoreError,
     MindscapeApp,
@@ -36,6 +37,7 @@ from mindscape_ai.apps.supabase_store import (
     create_app_in_supabase,
     delete_app_in_supabase,
     list_apps_from_supabase,
+    list_apps_registry_from_supabase,
     update_app_in_supabase,
 )
 from mindscape_ai.conport.db import ConPortDbPathError, find_workspace_root, resolve_conport_db_path
@@ -163,6 +165,7 @@ async def list_apps() -> dict[str, Any]:
     """List available apps/projects for the UI dropdown.
 
     Preferred source: Supabase (`mindscape_ai_apps`).
+    Fallback: local SQLite registry (`context_portal/apps_registry.db`).
     Fallback: MINDSCAPE_APP_ROOTS env scanning (legacy/dev/tests).
 
     Additionally, for local/dev UX, we may include an implicit "self app" entry for this
@@ -170,12 +173,26 @@ async def list_apps() -> dict[str, Any]:
     """
     self_app = _self_app()
 
-    # Preferred: Supabase registry
+    # Preferred: Supabase registry (when available), but *also* include any locally-registered
+    # apps from the SQLite registry. This avoids surprising behavior where apps created via the
+    # local registry (e.g. MCP-managed apps) never show in the UI when Supabase is configured.
     try:
-        apps = list_apps_from_supabase(include_disabled=False)
+        supabase_apps = list_apps_from_supabase(include_disabled=False)
 
-        if self_app is not None and all(a.app_id != self_app.app_id for a in apps):
-            apps = [self_app, *apps]
+        # Best-effort: union in local registry apps (ignore errors so Supabase remains primary).
+        try:
+            sqlite_apps = list_apps_from_sqlite(include_disabled=False)
+        except AppStoreError:
+            sqlite_apps = []
+
+        by_id: dict[str, MindscapeApp] = {a.app_id: a for a in sqlite_apps}
+        for a in supabase_apps:
+            by_id[a.app_id] = a
+
+        if self_app is not None:
+            by_id.setdefault(self_app.app_id, self_app)
+
+        apps = sorted(by_id.values(), key=lambda a: (a.sort_order, a.app_id.lower()))
 
         return {
             "apps": [{"app_id": a.app_id, "has_conport": a.has_conport} for a in apps],
@@ -187,13 +204,32 @@ async def list_apps() -> dict[str, Any]:
             },
         }
     except SupabaseUnavailableError:
-        # Fall back to env scanning
+        # Fall back to local registry / env scanning
         pass
     except AppStoreError as exc:
         # Misconfigured Supabase table/rows shouldn't 500 the UI; surface as 400.
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-    # Fallback: legacy env scanning
+    # Secondary fallback: local SQLite registry (context_portal/apps_registry.db)
+    try:
+        apps = list_apps_from_sqlite(include_disabled=False)
+
+        if self_app is not None and all(a.app_id != self_app.app_id for a in apps):
+            apps = [self_app, *apps]
+
+        return {
+            "apps": [{"app_id": a.app_id, "has_conport": a.has_conport} for a in apps],
+            "source": {
+                "env": "MINDSCAPE_APPS_SQLITE_DB",
+                "configured": True,
+                "count": len(apps),
+            },
+        }
+    except AppStoreError:
+        # If local registry is corrupted/misconfigured, allow a last-resort env scan.
+        pass
+
+    # Final fallback: legacy env scanning
     roots_raw = _parse_app_roots_env(os.getenv("MINDSCAPE_APP_ROOTS"))
     if not roots_raw:
         # Fail closed: no implicit scanning of arbitrary roots. However, it's still safe to
@@ -222,6 +258,37 @@ async def list_apps() -> dict[str, Any]:
     return {
         "apps": apps_out,
         "source": {"env": "MINDSCAPE_APP_ROOTS", "configured": True, "count": len(apps_out)},
+    }
+
+
+@router.get("/registry")
+@router.get("/registry/")
+async def list_apps_registry() -> dict[str, Any]:
+    """List full apps registry rows for the Apps Manager UI (Supabase only).
+
+    Returns fields from Supabase `mindscape_ai_apps` including `root_path`.
+
+    Notes:
+    - This endpoint is intentionally separate from `GET /apps`, which powers the global dropdown
+      and avoids returning `root_path`.
+    - If Supabase is unavailable/misconfigured, this returns a 503/400 rather than falling back
+      to local registries, per "Supabase is the source of truth" for the manager panel.
+    """
+    try:
+        apps = list_apps_registry_from_supabase(include_disabled=True)
+    except SupabaseUnavailableError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except AppStoreError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    return {
+        "apps": [a.__dict__ for a in apps],
+        "source": {
+            "type": "supabase",
+            "table": "mindscape_ai_apps",
+            "configured": True,
+            "count": len(apps),
+        },
     }
 
 

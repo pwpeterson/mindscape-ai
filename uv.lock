@@ -1920,6 +1920,7 @@ dependencies = [
     { name = "python-dotenv" },
     { name = "pyyaml" },
     { name = "rich" },
+    { name = "supabase" },
     { name = "tomli", marker = "python_full_version < '3.11'" },
     { name = "uvicorn", extra = ["standard"] },
 ]
@@ -2035,6 +2036,7 @@ requires-dist = [
     { name = "sentence-transformers", marker = "extra == 'crawl4ai'", specifier = ">=4.1.0" },
     { name = "sqlalchemy", marker = "extra == 'all'", specifier = ">=2.0.0" },
     { name = "sqlalchemy", marker = "extra == 'db'", specifier = ">=2.0.0" },
+    { name = "supabase", specifier = "==2.15.1" },
     { name = "supabase", marker = "extra == 'crawl4ai'", specifier = "==2.15.1" },
     { name = "tomli", marker = "python_full_version < '3.11'", specifier = ">=2.0.0" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.30.0" },
