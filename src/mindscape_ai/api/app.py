@@ -15,6 +15,7 @@ from loguru import logger
 from mindscape_ai.api.routes.apps import router as apps_router
 from mindscape_ai.api.routes.conport import router as conport_router
 from mindscape_ai.api.routes.events import router as events_router
+from mindscape_ai.api.routes.llm_usage import router as llm_usage_router
 from mindscape_ai.api.routes.mem0 import router as mem0_router
 from mindscape_ai.api.routes.prompts import router as prompts_router
 from mindscape_ai.api.routes.tokens import router as tokens_router
@@ -61,6 +62,7 @@ def create_app() -> FastAPI:
     api.include_router(mem0_router)
     api.include_router(prompts_router)
     api.include_router(tokens_router)
+    api.include_router(llm_usage_router)
     api.include_router(events_router)
     app.include_router(api)
 

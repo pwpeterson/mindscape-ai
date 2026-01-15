@@ -11,6 +11,15 @@
         type PromptsSignatureResponse,
     } from "$lib/api/prompts";
 
+    import {
+        llmUsageDaily,
+        llmUsageEvents,
+        type LlmUsageDailyResponse,
+        type LlmUsageDailyRow,
+        type LlmUsageEventRow,
+        type LlmUsageEventsResponse,
+    } from "$lib/api/llmUsage";
+
     const appId = $derived($page.url.searchParams.get("app_id"));
 
     let loading = $state(true);
@@ -28,6 +37,113 @@
     // Controls for per-file stats
     let maxFiles = $state<number>(500);
     let maxFileBytes = $state<number>(200_000);
+
+    // --- LLM usage state (Supabase-backed, via Mindscape API) ---
+    let usageLoading = $state(false);
+    let usageError = $state<string | null>(null);
+
+    let usageSinceHours = $state<number>(24);
+    let usageLimit = $state<number>(25);
+    let usageDays = $state<number>(30);
+
+    let usageEvents = $state<LlmUsageEventRow[]>([]);
+    let usageDaily = $state<LlmUsageDailyRow[]>([]);
+
+    const summary = $derived(summarizeEvents(usageEvents));
+
+    function fmtInt(n: number | null | undefined): string {
+        if (typeof n !== "number" || !Number.isFinite(n)) return "—";
+        return Math.trunc(n).toLocaleString();
+    }
+
+    function toNumber(v: number | string | null | undefined): number | null {
+        if (v == null) return null;
+        if (typeof v === "number" && Number.isFinite(v)) return v;
+        if (typeof v === "string" && v.trim()) {
+            const parsed = Number(v);
+            if (Number.isFinite(parsed)) return parsed;
+        }
+        return null;
+    }
+
+    function fmtUsd(v: number | string | null | undefined): string {
+        const n = toNumber(v);
+        if (n == null) return "—";
+        // Keep this lightweight; no currency localization needed right now.
+        return `$${n.toFixed(4)}`;
+    }
+
+    async function refreshUsage(): Promise<void> {
+        usageLoading = true;
+        usageError = null;
+
+        try {
+            const [eventsResp, dailyResp] = await Promise.all([
+                llmUsageEvents(fetch, {
+                    app_id: appId,
+                    since_hours: usageSinceHours,
+                    limit: usageLimit,
+                }) as Promise<LlmUsageEventsResponse>,
+                llmUsageDaily(fetch, {
+                    app_id: appId,
+                    days: usageDays,
+                    limit: usageDays,
+                }) as Promise<LlmUsageDailyResponse>,
+            ]);
+
+            usageEvents = eventsResp.events ?? [];
+            usageDaily = dailyResp.rows ?? [];
+        } catch (e) {
+            usageError = e instanceof Error ? e.message : String(e);
+            usageEvents = [];
+            usageDaily = [];
+        } finally {
+            usageLoading = false;
+        }
+    }
+
+    function summarizeEvents(events: LlmUsageEventRow[]): {
+        requests: number;
+        totalTokens: number;
+        inputTokens: number;
+        outputTokens: number;
+        estimatedCost: number | null;
+        avgLatencyMs: number | null;
+    } {
+        let requests = 0;
+        let totalTokens = 0;
+        let inputTokens = 0;
+        let outputTokens = 0;
+        let estimatedCost = 0;
+
+        let latencySum = 0;
+        let latencyCount = 0;
+
+        for (const ev of events) {
+            requests += 1;
+            totalTokens += Number(ev.total_tokens ?? 0) || 0;
+            inputTokens += Number(ev.input_tokens ?? 0) || 0;
+            outputTokens += Number(ev.output_tokens ?? 0) || 0;
+
+            const c = toNumber(ev.estimated_cost);
+            if (c != null) estimatedCost += c;
+
+            const lat = ev.latency_ms;
+            if (typeof lat === "number" && Number.isFinite(lat)) {
+                latencySum += lat;
+                latencyCount += 1;
+            }
+        }
+
+        return {
+            requests,
+            totalTokens,
+            inputTokens,
+            outputTokens,
+            estimatedCost: requests ? estimatedCost : null,
+            avgLatencyMs: latencyCount ? latencySum / latencyCount : null,
+        };
+    }
 
     async function refreshFiles() {
         filesLoading = true;
@@ -87,6 +203,7 @@
 
     onMount(() => {
         void refresh();
+        void refreshUsage();
 
         // Browser-only: subscribe to prompt signature changes.
         const conn = connectPromptsStream(
@@ -149,6 +266,13 @@
                     disabled={filesLoading}
                 >
                     {filesLoading ? "Loading…" : "Refresh files"}
+                </button>
+                <button
+                    class="btn"
+                    onclick={() => void refreshUsage()}
+                    disabled={usageLoading}
+                >
+                    {usageLoading ? "Loading…" : "Refresh usage"}
                 </button>
                 <button
                     class="btn btn-primary"
@@ -224,7 +348,222 @@
                     >app_id</code
                 >
             </li>
+            <li>
+                Analytics: display per-task/provider/model usage stats (backed
+                by Supabase
+                <code>llm_usage_events</code>)
+            </li>
         </ul>
+    </section>
+
+    <section class="card mt-6">
+        <div class="flex flex-wrap items-start justify-between gap-3">
+            <div>
+                <h2 class="card-title">LLM usage (recent)</h2>
+                <div class="mt-1 text-xs text-gray-300/80">
+                    Aggregated from Supabase <code>llm_usage_events</code> (no raw
+                    prompts).
+                </div>
+            </div>
+
+            <form
+                class="flex flex-wrap items-end gap-2"
+                onsubmit={(e) => {
+                    e.preventDefault();
+                    void refreshUsage();
+                }}
+            >
+                <label class="field w-[140px]">
+                    <span class="field-label">since_hours</span>
+                    <input
+                        type="number"
+                        min="0"
+                        max="8760"
+                        bind:value={usageSinceHours}
+                        class="input"
+                    />
+                </label>
+
+                <label class="field w-[120px]">
+                    <span class="field-label">limit</span>
+                    <input
+                        type="number"
+                        min="1"
+                        max="500"
+                        bind:value={usageLimit}
+                        class="input"
+                    />
+                </label>
+
+                <label class="field w-[120px]">
+                    <span class="field-label">days</span>
+                    <input
+                        type="number"
+                        min="1"
+                        max="365"
+                        bind:value={usageDays}
+                        class="input"
+                    />
+                </label>
+
+                <button
+                    type="submit"
+                    class="btn btn-primary"
+                    disabled={usageLoading}
+                >
+                    {usageLoading ? "Loading…" : "Apply"}
+                </button>
+            </form>
+        </div>
+
+        {#if usageError}
+            <div
+                class="mt-4 rounded-xl border border-red-500/30 bg-red-500/10 p-4 text-red-100"
+            >
+                <div class="text-sm font-semibold">Error</div>
+                <div class="mt-2 whitespace-pre-wrap text-sm text-red-100/90">
+                    {usageError}
+                </div>
+            </div>
+        {/if}
+
+        <div class="mt-4 grid gap-3 md:grid-cols-3">
+            <div class="rounded-lg border border-white/10 bg-black/10 p-3">
+                <div
+                    class="text-xs font-semibold uppercase tracking-wide text-gray-300/80"
+                >
+                    Requests
+                </div>
+                <div class="mt-2 text-sm text-gray-200">
+                    {fmtInt(summary.requests)}
+                </div>
+            </div>
+
+            <div class="rounded-lg border border-white/10 bg-black/10 p-3">
+                <div
+                    class="text-xs font-semibold uppercase tracking-wide text-gray-300/80"
+                >
+                    Total tokens
+                </div>
+                <div class="mt-2 text-sm text-gray-200">
+                    {fmtInt(summary.totalTokens)}
+                </div>
+                <div class="mt-1 text-xs text-gray-300/70">
+                    in: {fmtInt(summary.inputTokens)} / out: {fmtInt(
+                        summary.outputTokens,
+                    )}
+                </div>
+            </div>
+
+            <div class="rounded-lg border border-white/10 bg-black/10 p-3">
+                <div
+                    class="text-xs font-semibold uppercase tracking-wide text-gray-300/80"
+                >
+                    Estimated cost
+                </div>
+                <div class="mt-2 text-sm text-gray-200">
+                    {fmtUsd(summary.estimatedCost)}
+                </div>
+                <div class="mt-1 text-xs text-gray-300/70">
+                    Avg latency: {summary.avgLatencyMs == null
+                        ? "—"
+                        : `${Math.round(summary.avgLatencyMs)}ms`}
+                </div>
+            </div>
+        </div>
+
+        <div class="mt-4 grid gap-3 lg:grid-cols-2">
+            <div class="overflow-auto rounded-lg border border-white/10">
+                <table class="min-w-full text-left text-xs text-gray-200">
+                    <thead class="bg-black/20 text-gray-300">
+                        <tr>
+                            <th class="px-3 py-2">Created</th>
+                            <th class="px-3 py-2">Provider</th>
+                            <th class="px-3 py-2">Model</th>
+                            <th class="px-3 py-2">Task</th>
+                            <th class="px-3 py-2">Tokens</th>
+                            <th class="px-3 py-2">Cost</th>
+                            <th class="px-3 py-2">Status</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {#if !usageLoading && usageEvents.length === 0}
+                            <tr class="border-t border-white/10">
+                                <td class="px-3 py-2 text-gray-300" colspan="7">
+                                    No usage events found for this scope/time
+                                    window.
+                                </td>
+                            </tr>
+                        {:else}
+                            {#each usageEvents as ev (ev.request_id)}
+                                <tr class="border-t border-white/10">
+                                    <td
+                                        class="px-3 py-2 font-mono text-[11px] whitespace-nowrap"
+                                    >
+                                        {ev.created_at}
+                                    </td>
+                                    <td class="px-3 py-2">{ev.provider}</td>
+                                    <td class="px-3 py-2 font-mono text-[11px]">
+                                        {ev.model}
+                                    </td>
+                                    <td class="px-3 py-2">{ev.task ?? "—"}</td>
+                                    <td class="px-3 py-2 font-mono">
+                                        {fmtInt(ev.total_tokens)}
+                                    </td>
+                                    <td class="px-3 py-2 font-mono">
+                                        {fmtUsd(ev.estimated_cost)}
+                                    </td>
+                                    <td class="px-3 py-2 font-mono">
+                                        {ev.status_code ?? "—"}
+                                    </td>
+                                </tr>
+                            {/each}
+                        {/if}
+                    </tbody>
+                </table>
+            </div>
+
+            <div class="overflow-auto rounded-lg border border-white/10">
+                <table class="min-w-full text-left text-xs text-gray-200">
+                    <thead class="bg-black/20 text-gray-300">
+                        <tr>
+                            <th class="px-3 py-2">Day</th>
+                            <th class="px-3 py-2">Requests</th>
+                            <th class="px-3 py-2">Tokens</th>
+                            <th class="px-3 py-2">Cost</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {#if !usageLoading && usageDaily.length === 0}
+                            <tr class="border-t border-white/10">
+                                <td class="px-3 py-2 text-gray-300" colspan="4">
+                                    No daily rollups found.
+                                </td>
+                            </tr>
+                        {:else}
+                            {#each usageDaily as row (row.day)}
+                                <tr class="border-t border-white/10">
+                                    <td
+                                        class="px-3 py-2 font-mono text-[11px] whitespace-nowrap"
+                                    >
+                                        {row.day}
+                                    </td>
+                                    <td class="px-3 py-2 font-mono">
+                                        {fmtInt(row.requests)}
+                                    </td>
+                                    <td class="px-3 py-2 font-mono">
+                                        {fmtInt(row.total_tokens)}
+                                    </td>
+                                    <td class="px-3 py-2 font-mono">
+                                        {fmtUsd(row.estimated_cost)}
+                                    </td>
+                                </tr>
+                            {/each}
+                        {/if}
+                    </tbody>
+                </table>
+            </div>
+        </div>
     </section>
 
     <section class="card mt-6">
