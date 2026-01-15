@@ -24,6 +24,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable
 
+from mindscape_ai.apps.path_mapping import map_runtime_path
 from mindscape_ai.apps.supabase_store import AppStoreError, MindscapeApp
 from mindscape_ai.conport.db import find_workspace_root
 
@@ -116,9 +117,47 @@ def _rows_to_apps(rows: Iterable[sqlite3.Row]) -> list[MindscapeApp]:
     return out
 
 
+def _runtime_root(root_path: Path) -> Path:
+    return map_runtime_path(root_path)
+
+
+def _candidate_conport_db_paths(root_path: Path) -> list[Path]:
+    root = root_path.expanduser()
+
+    candidates: list[Path] = []
+
+    if root.name == "context_portal":
+        candidates.append((root / "context.db").resolve())
+
+    candidates.append((root / "context_portal" / "context.db").resolve())
+
+    for p in root.glob("*/context_portal/context.db"):
+        candidates.append(p.resolve())
+    for p in root.glob("*/*/context_portal/context.db"):
+        candidates.append(p.resolve())
+
+    seen: set[str] = set()
+    out: list[Path] = []
+    for c in candidates:
+        key = c.as_posix()
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(c)
+
+    return out
+
+
+def _find_conport_db_for_root(root_path: Path) -> Path | None:
+    for candidate in _candidate_conport_db_paths(root_path):
+        if candidate.exists() and candidate.is_file():
+            return candidate
+    return None
+
+
 def _has_conport_db(root_path: Path) -> bool:
-    db = (root_path / "context_portal" / "context.db").resolve()
-    return db.exists() and db.is_file()
+    runtime_root = _runtime_root(root_path)
+    return _find_conport_db_for_root(runtime_root) is not None
 
 
 def list_apps_from_sqlite(*, include_disabled: bool = False) -> list[MindscapeApp]:
@@ -271,21 +310,28 @@ def resolve_app_root_from_sqlite(app_id: str) -> Path:
         except Exception as exc:  # noqa: BLE001
             raise AppStoreError("Invalid root_path for app_id") from exc
 
-        if not resolved.exists() or not resolved.is_dir():
+        runtime_root = _runtime_root(resolved)
+
+        if not runtime_root.exists() or not runtime_root.is_dir():
             raise AppStoreError("Resolved app root does not exist or is not a directory.")
-        return resolved
+        return runtime_root
     finally:
         conn.close()
 
 
 def resolve_conport_db_path_from_sqlite(app_id: str) -> Path:
-    """Resolve `app_id` -> <root_path>/context_portal/context.db using local registry."""
+    """Resolve `app_id` -> ConPort DB path using local registry.
+
+    Note: root_path is mapped to a runtime-visible path (containers, etc.) before resolution.
+    """
     root = resolve_app_root_from_sqlite(app_id)
-    db_path = (root / "context_portal" / "context.db").resolve()
+
+    db_path = _find_conport_db_for_root(root)
+    if db_path is None:
+        raise AppStoreError("Resolved ConPort DB not found.")
+
     if db_path.suffix.lower() != ".db":
         raise AppStoreError("Resolved ConPort DB must end with '.db'.")
-    if not db_path.exists() or not db_path.is_file():
-        raise AppStoreError("Resolved ConPort DB not found.")
     return db_path
 
 

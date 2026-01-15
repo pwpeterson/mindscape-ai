@@ -391,7 +391,9 @@
                                 <th class="text-left py-2 pr-3">app_id</th>
                                 <th class="text-left py-2 pr-3">display_name</th
                                 >
-                                <th class="text-left py-2 pr-3">root_path</th>
+                                <th class="text-left py-2 pr-3 w-1/2"
+                                    >root_path</th
+                                >
                                 <th class="text-left py-2 pr-3">enabled</th>
                                 <th class="text-left py-2 pr-3">sort_order</th>
                                 <th class="text-left py-2 pr-3">has_conport</th>
@@ -414,9 +416,9 @@
                                         />
                                     </td>
 
-                                    <td class="py-3 pr-3">
+                                    <td class="py-3 pr-3 w-1/2">
                                         <input
-                                            class="w-[50%] rounded-md border border-white/10 bg-black/30 px-2 py-1 text-sm text-gray-100"
+                                            class="w-3/4 rounded-md border border-white/10 bg-black/30 px-2 py-1 text-sm text-gray-100"
                                             placeholder="/home/pwp/srv/mcps/mem0-mcp"
                                             bind:value={row.root_path}
                                             disabled={row.saving}

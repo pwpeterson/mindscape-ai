@@ -16,9 +16,19 @@ def test_health_ok() -> None:
     assert resp.json() == {"status": "ok"}
 
 
-def test_apps_list_empty_when_not_configured(monkeypatch) -> None:
-    # Fail-closed baseline: when MINDSCAPE_APP_ROOTS is unset, and self-app is disabled,
-    # the apps list is empty.
+def test_apps_list_empty_when_not_configured(monkeypatch, tmp_path: Path) -> None:
+    # Hermetic baseline: force Supabase unavailable and point the local SQLite registry to
+    # a temp file so the real workspace/app registry cannot leak into this test.
+    import mindscape_ai.api.routes.apps as apps_routes
+    from mindscape_ai.apps.supabase_store import SupabaseUnavailableError
+
+    monkeypatch.setattr(
+        apps_routes,
+        "list_apps_from_supabase",
+        lambda *, include_disabled=False: (_ for _ in ()).throw(SupabaseUnavailableError("no supabase")),
+    )
+
+    monkeypatch.setenv("MINDSCAPE_APPS_SQLITE_DB", str(tmp_path / "apps_registry.db"))
     monkeypatch.delenv("MINDSCAPE_APP_ROOTS", raising=False)
     monkeypatch.setenv("MINDSCAPE_INCLUDE_SELF_APP", "false")
 
@@ -30,14 +40,24 @@ def test_apps_list_empty_when_not_configured(monkeypatch) -> None:
 
     payload = resp.json()
     assert payload["apps"] == []
-    assert payload["source"]["env"] == "MINDSCAPE_APP_ROOTS"
-    assert payload["source"]["configured"] is False
+    assert payload["source"]["env"] == "MINDSCAPE_APPS_SQLITE_DB"
+    assert payload["source"]["configured"] is True
     assert payload["source"]["count"] == 0
 
 
-def test_apps_list_includes_self_app_by_default(monkeypatch) -> None:
-    # Local/dev UX: with no Supabase and no MINDSCAPE_APP_ROOTS, the API should still include
+def test_apps_list_includes_self_app_by_default(monkeypatch, tmp_path: Path) -> None:
+    # Hermetic local/dev UX: even without Supabase + MINDSCAPE_APP_ROOTS, the API should include
     # this Mindscape-AI instance so the UI dropdown isn't empty on first run.
+    import mindscape_ai.api.routes.apps as apps_routes
+    from mindscape_ai.apps.supabase_store import SupabaseUnavailableError
+
+    monkeypatch.setattr(
+        apps_routes,
+        "list_apps_from_supabase",
+        lambda *, include_disabled=False: (_ for _ in ()).throw(SupabaseUnavailableError("no supabase")),
+    )
+
+    monkeypatch.setenv("MINDSCAPE_APPS_SQLITE_DB", str(tmp_path / "apps_registry.db"))
     monkeypatch.delenv("MINDSCAPE_APP_ROOTS", raising=False)
     monkeypatch.delenv("MINDSCAPE_INCLUDE_SELF_APP", raising=False)
 
@@ -49,8 +69,8 @@ def test_apps_list_includes_self_app_by_default(monkeypatch) -> None:
 
     payload = resp.json()
     assert payload["apps"] == [{"app_id": "mindscape-ai", "has_conport": True}]
-    assert payload["source"]["env"] == "MINDSCAPE_APP_ROOTS"
-    assert payload["source"]["configured"] is False
+    assert payload["source"]["env"] == "MINDSCAPE_APPS_SQLITE_DB"
+    assert payload["source"]["configured"] is True
     assert payload["source"]["count"] == 1
 
 

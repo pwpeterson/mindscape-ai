@@ -20,6 +20,7 @@ from typing import Any
 
 import httpx
 
+from mindscape_ai.apps.path_mapping import map_runtime_path
 from mindscape_ai.supabase.client import SupabaseUnavailableError, get_supabase_client
 
 
@@ -64,13 +65,62 @@ class MindscapeAppInternal:
     root_path: Path
 
 
-def _resolve_conport_db_for_root(root_path: Path) -> Path:
-    return (root_path / "context_portal" / "context.db").resolve()
+def _runtime_root(root_path: Path) -> Path:
+    """Translate a stored registry root_path into a runtime-visible path (containers, etc.)."""
+    return map_runtime_path(root_path)
+
+
+def _candidate_conport_db_paths(root_path: Path) -> list[Path]:
+    """Return candidate ConPort DB locations under an app root.
+
+    We primarily expect:
+      <root_path>/context_portal/context.db
+
+    But we also support a couple common misconfigurations / layouts:
+      - If root_path already points at the context_portal directory:
+        <root_path>/context.db
+      - Shallow search (1-2 levels) for context_portal/context.db under the root.
+    """
+    root = root_path.expanduser()
+
+    candidates: list[Path] = []
+
+    # If the configured root is already "context_portal", accept context.db directly.
+    if root.name == "context_portal":
+        candidates.append((root / "context.db").resolve())
+
+    candidates.append((root / "context_portal" / "context.db").resolve())
+
+    # Shallow search: avoid unbounded filesystem traversal.
+    for p in root.glob("*/context_portal/context.db"):
+        candidates.append(p.resolve())
+    for p in root.glob("*/*/context_portal/context.db"):
+        candidates.append(p.resolve())
+
+    # De-dupe while preserving order.
+    seen: set[str] = set()
+    out: list[Path] = []
+    for c in candidates:
+        key = c.as_posix()
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(c)
+
+    return out
+
+
+def _find_conport_db_for_root(root_path: Path) -> Path | None:
+    """Find an existing ConPort DB for a *runtime-visible* app root."""
+    for candidate in _candidate_conport_db_paths(root_path):
+        if candidate.exists() and candidate.is_file():
+            return candidate
+    return None
 
 
 def _has_conport_db(root_path: Path) -> bool:
-    db = _resolve_conport_db_for_root(root_path)
-    return db.exists() and db.is_file()
+    runtime_root = _runtime_root(root_path)
+    return _find_conport_db_for_root(runtime_root) is not None
 
 
 def _row_to_internal(row: dict[str, Any]) -> MindscapeAppInternal:
@@ -208,11 +258,15 @@ def resolve_conport_db_path_from_supabase(app_id: str) -> Path:
     if not isinstance(root_raw, str) or not root_raw.strip():
         raise AppStoreError(f"Invalid root_path for app_id: {app_id}")
 
-    db_path = _resolve_conport_db_for_root(Path(root_raw).expanduser())
+    stored_root = Path(root_raw).expanduser()
+    runtime_root = _runtime_root(stored_root)
+
+    db_path = _find_conport_db_for_root(runtime_root)
+    if db_path is None:
+        raise AppStoreError("Resolved ConPort DB not found.")
+
     if db_path.suffix.lower() != ".db":
         raise AppStoreError("Resolved ConPort DB must end with '.db'.")
-    if not db_path.exists() or not db_path.is_file():
-        raise AppStoreError("Resolved ConPort DB not found.")
     return db_path
 
 
