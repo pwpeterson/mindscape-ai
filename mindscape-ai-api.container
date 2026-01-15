@@ -43,6 +43,8 @@ Volume=/home/pwp/srv/apps/mindscape-ai/context_portal:/workspace/context_portal:
 Environment=MINDSCAPE_PATH_MAP=/home/pwp/srv/apps/mindscape-ai=/workspace
 
 # Mount managed app roots so the API can resolve per-app ConPort DBs (has_conport check + ConPort routes).
+# Needed for Supabase registry entries whose root_path points into /home/pwp/srv/apps/* (e.g. model-proxy).
+Volume=/home/pwp/srv/apps:/home/pwp/srv/apps:Z
 Volume=/home/pwp/srv/mcps:/home/pwp/srv/mcps:Z
 
 # Mem0 defaults to OpenAI providers; mem0 initialization will fail unless OPENAI_API_KEY is set.
