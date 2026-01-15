@@ -10,7 +10,9 @@
         type Mem0Memory,
     } from "$lib/api/mem0";
 
-    const scopedAppId = $derived($page.url.searchParams.get("app_id") ?? undefined);
+    const scopedAppId = $derived(
+        $page.url.searchParams.get("app_id") ?? undefined,
+    );
 
     // Filters
     let userId = $state("");
@@ -143,41 +145,35 @@
     <title>Mem0</title>
 </svelte:head>
 
-<main class="page-container">
-    <header class="page-header">
-        <div>
-            <h1 class="page-title">Mem0</h1>
-            <p class="page-subtitle">
-                List/search memories by <code>user_id</code> with optional
-                <code>app_id</code> / <code>project_id</code> filters. Reads are
-                always enabled; writes are gated by
-                <code>MINDSCAPE_MEM0_WRITE=true</code>.
-            </p>
-        </div>
-
-        <div class="mt-4 flex flex-wrap items-center gap-2">
-            <button class="btn" onclick={refreshHealth} disabled={loading}>
-                Refresh status
-            </button>
-            <button class="btn" onclick={listMemories} disabled={loading}>
-                List memories
-            </button>
-        </div>
-    </header>
-
+<div>
     <section class="card">
-        <h2 class="card-title">Filters</h2>
+        <div class="flex flex-wrap items-start justify-between gap-3">
+            <h2 class="card-title">Filters</h2>
+
+            <div class="flex flex-wrap items-center gap-2">
+                <button class="btn" onclick={refreshHealth} disabled={loading}>
+                    Refresh status
+                </button>
+                <button class="btn" onclick={listMemories} disabled={loading}>
+                    List memories
+                </button>
+            </div>
+        </div>
 
         <div class="mt-2 text-sm text-gray-200">
             URL scope app_id:
-            <code class="rounded bg-white/5 px-1.5 py-0.5 text-xs text-gray-300">
+            <code
+                class="rounded bg-white/5 px-1.5 py-0.5 text-xs text-gray-300"
+            >
                 {scopedAppId ?? "(none)"}
             </code>
         </div>
 
         <div class="mt-4 grid grid-cols-1 gap-3 md:grid-cols-3">
             <div>
-                <label class="text-xs text-gray-300/80" for="mem0-user-id">user_id</label>
+                <label class="text-xs text-gray-300/80" for="mem0-user-id"
+                    >user_id</label
+                >
                 <input
                     id="mem0-user-id"
                     class="mt-1 w-full rounded-md border border-white/10 bg-white/5 px-3 py-2 text-sm text-gray-100 placeholder:text-gray-400 focus:outline-none"
@@ -185,12 +181,15 @@
                     bind:value={userId}
                 />
                 <div class="mt-1 text-xs text-gray-300/70">
-                    Blank uses <code>MEM0_DEFAULT_USER_ID</code> (default: <code>default</code>).
+                    Blank uses <code>MEM0_DEFAULT_USER_ID</code> (default:
+                    <code>default</code>).
                 </div>
             </div>
 
             <div>
-                <label class="text-xs text-gray-300/80" for="mem0-app-id">app_id</label>
+                <label class="text-xs text-gray-300/80" for="mem0-app-id"
+                    >app_id</label
+                >
                 <input
                     id="mem0-app-id"
                     class="mt-1 w-full rounded-md border border-white/10 bg-white/5 px-3 py-2 text-sm text-gray-100 placeholder:text-gray-400 focus:outline-none"
@@ -203,7 +202,9 @@
             </div>
 
             <div>
-                <label class="text-xs text-gray-300/80" for="mem0-project-id">project_id</label>
+                <label class="text-xs text-gray-300/80" for="mem0-project-id"
+                    >project_id</label
+                >
                 <input
                     id="mem0-project-id"
                     class="mt-1 w-full rounded-md border border-white/10 bg-white/5 px-3 py-2 text-sm text-gray-100 placeholder:text-gray-400 focus:outline-none"
@@ -216,7 +217,9 @@
         <div class="mt-4 text-sm text-gray-200">
             Status:
             {#if health}
-                <code class="rounded bg-white/5 px-1.5 py-0.5 text-xs text-gray-300">
+                <code
+                    class="rounded bg-white/5 px-1.5 py-0.5 text-xs text-gray-300"
+                >
                     {health.status}{health.mem0 ? ` (${health.mem0})` : ""}
                 </code>
                 {#if health.detail}
@@ -230,7 +233,9 @@
         </div>
 
         {#if error}
-            <div class="mt-4 rounded-md border border-red-500/30 bg-red-500/10 px-3 py-2 text-sm text-red-100">
+            <div
+                class="mt-4 rounded-md border border-red-500/30 bg-red-500/10 px-3 py-2 text-sm text-red-100"
+            >
                 {error}
             </div>
         {/if}
@@ -246,13 +251,19 @@
                 bind:value={query}
                 onkeydown={(e) => e.key === "Enter" && void search()}
             />
-            <button class="btn" onclick={search} disabled={loading || !query.trim()}>
+            <button
+                class="btn"
+                onclick={search}
+                disabled={loading || !query.trim()}
+            >
                 Search
             </button>
         </div>
 
         {#if results.length}
-            <div class="mt-4 text-sm text-gray-200">Results ({results.length})</div>
+            <div class="mt-4 text-sm text-gray-200">
+                Results ({results.length})
+            </div>
 
             <div class="mt-3 overflow-x-auto">
                 <table class="w-full text-left text-sm">
@@ -269,7 +280,9 @@
                         {#each results as r, i (r.id ?? r.memory_id ?? r._id ?? i)}
                             {@const meta = memoryMetadata(r)}
                             <tr class="border-b border-white/10 align-top">
-                                <td class="py-3 pr-3 font-mono text-xs">{memoryId(r)}</td>
+                                <td class="py-3 pr-3 font-mono text-xs"
+                                    >{memoryId(r)}</td
+                                >
                                 <td class="py-3 pr-3 font-mono text-xs">
                                     {#if memoryScore(r) !== null}
                                         {memoryScore(r)}
@@ -277,14 +290,29 @@
                                         <span class="text-gray-300/60">—</span>
                                     {/if}
                                 </td>
-                                <td class="py-3 pr-3 font-mono text-xs">{String(meta.app_id ?? "")}</td>
-                                <td class="py-3 pr-3 font-mono text-xs">{String(meta.project_id ?? "")}</td>
+                                <td class="py-3 pr-3 font-mono text-xs"
+                                    >{String(meta.app_id ?? "")}</td
+                                >
+                                <td class="py-3 pr-3 font-mono text-xs"
+                                    >{String(meta.project_id ?? "")}</td
+                                >
                                 <td class="py-3 pr-3">
-                                    <pre class="whitespace-pre-wrap text-xs text-gray-200">{memoryText(r)}</pre>
+                                    <pre
+                                        class="whitespace-pre-wrap text-xs text-gray-200">{memoryText(
+                                            r,
+                                        )}</pre>
                                     {#if Object.keys(meta).length}
                                         <details class="mt-2">
-                                            <summary class="cursor-pointer text-xs text-gray-300/80">metadata</summary>
-                                            <pre class="mt-1 whitespace-pre-wrap text-xs text-gray-300/80">{JSON.stringify(meta, null, 2)}</pre>
+                                            <summary
+                                                class="cursor-pointer text-xs text-gray-300/80"
+                                                >metadata</summary
+                                            >
+                                            <pre
+                                                class="mt-1 whitespace-pre-wrap text-xs text-gray-300/80">{JSON.stringify(
+                                                    meta,
+                                                    null,
+                                                    2,
+                                                )}</pre>
                                         </details>
                                     {/if}
                                 </td>
@@ -304,7 +332,9 @@
         {#if loading}
             <div class="mt-3 text-sm text-gray-300/80">Loading…</div>
         {:else if memories.length}
-            <div class="mt-3 text-sm text-gray-200">Items ({memories.length})</div>
+            <div class="mt-3 text-sm text-gray-200">
+                Items ({memories.length})
+            </div>
 
             <div class="mt-3 overflow-x-auto">
                 <table class="w-full text-left text-sm">
@@ -320,15 +350,32 @@
                         {#each memories as m, i (m.id ?? m.memory_id ?? m._id ?? i)}
                             {@const meta = memoryMetadata(m)}
                             <tr class="border-b border-white/10 align-top">
-                                <td class="py-3 pr-3 font-mono text-xs">{memoryId(m)}</td>
-                                <td class="py-3 pr-3 font-mono text-xs">{String(meta.app_id ?? "")}</td>
-                                <td class="py-3 pr-3 font-mono text-xs">{String(meta.project_id ?? "")}</td>
+                                <td class="py-3 pr-3 font-mono text-xs"
+                                    >{memoryId(m)}</td
+                                >
+                                <td class="py-3 pr-3 font-mono text-xs"
+                                    >{String(meta.app_id ?? "")}</td
+                                >
+                                <td class="py-3 pr-3 font-mono text-xs"
+                                    >{String(meta.project_id ?? "")}</td
+                                >
                                 <td class="py-3 pr-3">
-                                    <pre class="whitespace-pre-wrap text-xs text-gray-200">{memoryText(m)}</pre>
+                                    <pre
+                                        class="whitespace-pre-wrap text-xs text-gray-200">{memoryText(
+                                            m,
+                                        )}</pre>
                                     {#if Object.keys(meta).length}
                                         <details class="mt-2">
-                                            <summary class="cursor-pointer text-xs text-gray-300/80">metadata</summary>
-                                            <pre class="mt-1 whitespace-pre-wrap text-xs text-gray-300/80">{JSON.stringify(meta, null, 2)}</pre>
+                                            <summary
+                                                class="cursor-pointer text-xs text-gray-300/80"
+                                                >metadata</summary
+                                            >
+                                            <pre
+                                                class="mt-1 whitespace-pre-wrap text-xs text-gray-300/80">{JSON.stringify(
+                                                    meta,
+                                                    null,
+                                                    2,
+                                                )}</pre>
                                         </details>
                                     {/if}
                                 </td>
@@ -339,10 +386,16 @@
             </div>
         {:else}
             <div class="mt-3 text-sm text-gray-300/80">
-                Click <span class="font-medium text-gray-200">List memories</span> to load items.
-                If you see “mem0 SDK not available”, install the backend extra:
-                <code class="rounded bg-white/5 px-1.5 py-0.5 text-xs text-gray-300">uv sync --extra mem0 --extra web</code>.
+                Click <span class="font-medium text-gray-200"
+                    >List memories</span
+                >
+                to load items. If you see “mem0 SDK not available”, install the backend
+                extra:
+                <code
+                    class="rounded bg-white/5 px-1.5 py-0.5 text-xs text-gray-300"
+                    >uv sync --extra mem0 --extra web</code
+                >.
             </div>
         {/if}
     </section>
-</main>
+</div>

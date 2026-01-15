@@ -126,34 +126,7 @@
     <title>Prompts</title>
 </svelte:head>
 
-<main class="page-container">
-    <header class="page-header">
-        <div>
-            <h1 class="page-title">Prompts</h1>
-            <p class="page-subtitle">
-                Prompt hot reload status (signature changes when prompt files
-                change).
-            </p>
-        </div>
-
-        <div class="flex items-center gap-2">
-            <button
-                class="btn"
-                onclick={() => void refreshFiles()}
-                disabled={filesLoading}
-            >
-                {filesLoading ? "Loading…" : "Refresh files"}
-            </button>
-            <button
-                class="btn btn-primary"
-                onclick={() => refresh()}
-                disabled={loading}
-            >
-                {loading ? "Loading…" : "Refresh all"}
-            </button>
-        </div>
-    </header>
-
+<div>
     {#if error}
         <div
             class="rounded-xl border border-red-500/30 bg-red-500/10 p-4 text-red-100"
@@ -166,7 +139,26 @@
     {/if}
 
     <section class="card">
-        <h2 class="card-title">Current scope</h2>
+        <div class="flex flex-wrap items-start justify-between gap-3">
+            <h2 class="card-title">Current scope</h2>
+
+            <div class="flex flex-wrap items-center gap-2">
+                <button
+                    class="btn"
+                    onclick={() => void refreshFiles()}
+                    disabled={filesLoading}
+                >
+                    {filesLoading ? "Loading…" : "Refresh files"}
+                </button>
+                <button
+                    class="btn btn-primary"
+                    onclick={() => refresh()}
+                    disabled={loading}
+                >
+                    {loading ? "Loading…" : "Refresh all"}
+                </button>
+            </div>
+        </div>
         <div class="mt-2 text-sm text-gray-200">
             app_id:
             <code
@@ -337,4 +329,4 @@
             </div>
         {/if}
     </section>
-</main>
+</div>

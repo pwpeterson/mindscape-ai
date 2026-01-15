@@ -3,6 +3,23 @@
 
     let { children } = $props();
 
+    type HeaderDef = { title: string; subtitle?: string };
+
+    function headerFor(pathname: string): HeaderDef {
+        switch (pathname) {
+            case "/mem0":
+                return {
+                    title: "Mem0 — Overview",
+                    subtitle:
+                        "User memory layer powered by Mem0. Scoped by app_id when provided.",
+                };
+            default:
+                return { title: "Mem0" };
+        }
+    }
+
+    let header = $derived(headerFor($page.url.pathname));
+
     function withScope(path: string): string {
         const app_id = $page.url.searchParams.get("app_id");
         const db = $page.url.searchParams.get("db");
@@ -26,6 +43,22 @@
 </script>
 
 <div class="module-shell mx-auto max-w-7xl px-6 py-6">
+    <header class="page-header">
+        <div class="flex items-start gap-6">
+            <div class="w-64 shrink-0">
+                <h1 class="page-title">{header.title}</h1>
+            </div>
+
+            <div class="min-w-0 flex-1">
+                {#if header.subtitle}
+                    <div class="text-lg font-medium text-gray-200/90">
+                        {header.subtitle}
+                    </div>
+                {/if}
+            </div>
+        </div>
+    </header>
+
     <div class="flex gap-6">
         <aside class="w-64 shrink-0">
             <div class="card h-full">
