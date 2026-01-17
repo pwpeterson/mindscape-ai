@@ -88,6 +88,41 @@ export type LlmUsageDailyResponse = {
     };
 };
 
+export type LlmRawPromptRow = {
+    request_id: string;
+    app_id: string | null;
+    task: string | null;
+    provider: string | null;
+    model: string | null;
+
+    messages: unknown; // JSONB - array of message objects
+    prompt_text: string;
+
+    prompt_sha256: string | null;
+    prompt_chars: number | null;
+    message_count: number | null;
+
+    metadata: Record<string, unknown>;
+    created_at: string;
+};
+
+export type LlmRawPromptsResponse = {
+    app_id: string | null;
+    filters: {
+        task: string | null;
+        provider: string | null;
+        model: string | null;
+        since_hours: number;
+        limit: number;
+    };
+    count: number;
+    prompts: LlmRawPromptRow[];
+    source: {
+        type: "supabase";
+        table: "llm_raw_prompts";
+    };
+};
+
 function apiBase(): string {
     // Never use an absolute base in the browser; it breaks remote access scenarios
     // where 127.0.0.1 refers to the client machine (not the server running containers).
@@ -198,6 +233,30 @@ export async function llmUsageDaily(
             provider: params.provider ?? null,
             model: params.model ?? null,
             days: params.days != null ? String(params.days) : null,
+            limit: params.limit != null ? String(params.limit) : null,
+        }),
+    );
+}
+
+export async function llmRawPrompts(
+    fetchFn: FetchLike,
+    params: {
+        app_id?: string | null;
+        task?: string | null;
+        provider?: string | null;
+        model?: string | null;
+        since_hours?: number | null;
+        limit?: number | null;
+    } = {},
+): Promise<LlmRawPromptsResponse> {
+    return getJson(
+        fetchFn,
+        buildUrl("/api/v1/llm-usage/raw-prompts", {
+            app_id: params.app_id ?? null,
+            task: params.task ?? null,
+            provider: params.provider ?? null,
+            model: params.model ?? null,
+            since_hours: params.since_hours != null ? String(params.since_hours) : null,
             limit: params.limit != null ? String(params.limit) : null,
         }),
     );

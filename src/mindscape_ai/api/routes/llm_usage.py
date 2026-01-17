@@ -2,6 +2,7 @@
 
 Backed by Supabase Postgres objects created in:
 - `supabase/migrations/20260115_0001_llm_usage_events.sql`
+- `supabase/migrations/20260115_0002_llm_raw_prompts.sql`
 
 Design goals:
 - Server-side only: the browser UI never talks to Supabase directly.
@@ -11,6 +12,7 @@ Design goals:
 Endpoints:
 - GET /api/v1/llm-usage/events
 - GET /api/v1/llm-usage/daily
+- GET /api/v1/llm-usage/raw-prompts
 """
 
 from __future__ import annotations
@@ -258,4 +260,83 @@ async def llm_usage_daily(
         "count": len(data),
         "rows": [r for r in data if isinstance(r, dict)],
         "source": {"type": "supabase", "view": "llm_usage_daily"},
+    }
+
+@router.get("/raw-prompts")
+async def llm_raw_prompts(
+    app_id: str | None = Query(default=None),
+    task: str | None = Query(default=None),
+    provider: str | None = Query(default=None),
+    model: str | None = Query(default=None),
+    since_hours: int = Query(default=24, ge=0, le=24 * 365),
+    limit: int = Query(default=25, ge=1, le=100),
+) -> dict[str, Any]:
+    """List raw prompts (privacy-sensitive, stored only when explicitly enabled).
+
+    Returns raw prompt data from `public.llm_raw_prompts` table.
+    This table is populated only when STORE_RAW_PROMPT=true in model-proxy.
+    """
+    _validate_app_id(app_id)
+    _validate_task(task)
+    _validate_provider(provider)
+    _validate_model(model)
+
+    client = _get_client_or_503()
+
+    since_dt = _utc_now() - timedelta(hours=int(since_hours))
+    since_iso = _iso(since_dt)
+
+    try:
+        query = client.table("llm_raw_prompts").select(
+            ",".join(
+                [
+                    "request_id",
+                    "app_id",
+                    "task",
+                    "provider",
+                    "model",
+                    "messages",
+                    "prompt_text",
+                    "prompt_sha256",
+                    "prompt_chars",
+                    "message_count",
+                    "metadata",
+                    "created_at",
+                ]
+            )
+        )
+
+        if app_id is not None:
+            query = query.eq("app_id", app_id)
+        if task is not None:
+            query = query.eq("task", task)
+        if provider is not None:
+            query = query.eq("provider", provider)
+        if model is not None:
+            query = query.eq("model", model)
+
+        query = query.gte("created_at", since_iso).order("created_at", desc=True).limit(limit)
+
+        resp = query.execute()
+    except httpx.HTTPError as exc:
+        raise HTTPException(status_code=503, detail="Supabase is unreachable (raw prompts).") from exc
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=500, detail=f"Failed to query raw prompts: {exc}") from exc
+
+    data = getattr(resp, "data", None)
+    if not isinstance(data, list):
+        raise HTTPException(status_code=500, detail="Unexpected response from Supabase (llm_raw_prompts)")
+
+    return {
+        "app_id": app_id,
+        "filters": {
+            "task": task,
+            "provider": provider,
+            "model": model,
+            "since_hours": since_hours,
+            "limit": limit,
+        },
+        "count": len(data),
+        "prompts": [r for r in data if isinstance(r, dict)],
+        "source": {"type": "supabase", "table": "llm_raw_prompts"},
     }

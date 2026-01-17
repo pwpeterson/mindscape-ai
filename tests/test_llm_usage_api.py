@@ -199,3 +199,90 @@ def test_llm_usage_daily_returns_shape(
     assert isinstance(payload["rows"], list)
     assert payload["rows"][0]["requests"] == 2
     assert payload["rows"][0]["total_tokens"] == 300
+
+
+def test_llm_raw_prompts_validates_app_id() -> None:
+    client = _client()
+    resp = client.get("/api/v1/llm-usage/raw-prompts", params={"app_id": "bad/app"})
+    assert resp.status_code == 400
+
+
+def test_llm_raw_prompts_returns_503_when_supabase_unavailable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import mindscape_ai.api.routes.llm_usage as llm_usage_routes
+
+    monkeypatch.setattr(
+        llm_usage_routes,
+        "get_supabase_client",
+        lambda: (_ for _ in ()).throw(SupabaseUnavailableError("no supabase")),
+    )
+
+    client = _client()
+    resp = client.get("/api/v1/llm-usage/raw-prompts")
+    assert resp.status_code == 503
+
+
+def test_llm_raw_prompts_returns_shape(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import mindscape_ai.api.routes.llm_usage as llm_usage_routes
+
+    fake_raw_prompts = [
+        {
+            "request_id": "req_raw_1",
+            "app_id": "mindscape-ai",
+            "task": "t:prompts",
+            "provider": "openai",
+            "model": "gpt-5.2",
+            "messages": [
+                {"role": "system", "content": "You are a helpful assistant."},
+                {"role": "user", "content": "Hello, world!"},
+            ],
+            "prompt_text": "You are a helpful assistant.\n\nHello, world!",
+            "prompt_sha256": "deadbeef",
+            "prompt_chars": 44,
+            "message_count": 2,
+            "metadata": {"note": "test"},
+            "created_at": "2026-01-15T12:00:00+00:00",
+        }
+    ]
+
+    # Extend _FakeSupabaseClient to support llm_raw_prompts table
+    class _FakeSupabaseClientWithRaw(_FakeSupabaseClient):
+        def __init__(self, *, events_data, daily_data, raw_prompts_data):
+            super().__init__(events_data=events_data, daily_data=daily_data)
+            self._raw_prompts_data = raw_prompts_data
+
+        def table(self, name: str) -> _FakeQuery:
+            if name == "llm_raw_prompts":
+                return _FakeQuery(name, self._raw_prompts_data)
+            return super().table(name)
+
+    monkeypatch.setattr(
+        llm_usage_routes,
+        "get_supabase_client",
+        lambda: _FakeSupabaseClientWithRaw(
+            events_data=[],
+            daily_data=[],
+            raw_prompts_data=fake_raw_prompts,
+        ),
+    )
+
+    client = _client()
+    resp = client.get("/api/v1/llm-usage/raw-prompts", params={"app_id": "mindscape-ai"})
+    assert resp.status_code == 200
+    payload = resp.json()
+
+    assert payload["source"]["table"] == "llm_raw_prompts"
+    assert payload["count"] == 1
+    assert isinstance(payload["prompts"], list)
+    assert payload["prompts"][0]["request_id"] == "req_raw_1"
+    assert payload["prompts"][0]["provider"] == "openai"
+    assert payload["prompts"][0]["model"] == "gpt-5.2"
+    assert payload["prompts"][0]["prompt_text"] == "You are a helpful assistant.\n\nHello, world!"
+    assert isinstance(payload["prompts"][0]["messages"], list)
+    assert payload["prompts"][0]["message_count"] == 2
+    assert payload["prompts"][0]["prompt_chars"] == 44
+    assert payload["prompts"][0]["prompt_sha256"] == "deadbeef"
+    assert payload["prompts"][0]["metadata"]["note"] == "test"

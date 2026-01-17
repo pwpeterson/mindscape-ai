@@ -12,8 +12,11 @@
     } from "$lib/api/prompts";
 
     import {
+        llmRawPrompts,
         llmUsageDaily,
         llmUsageEvents,
+        type LlmRawPromptRow,
+        type LlmRawPromptsResponse,
         type LlmUsageDailyResponse,
         type LlmUsageDailyRow,
         type LlmUsageEventRow,
@@ -48,6 +51,14 @@
 
     let usageEvents = $state<LlmUsageEventRow[]>([]);
     let usageDaily = $state<LlmUsageDailyRow[]>([]);
+
+    // --- Raw prompts state ---
+    let rawPromptsLoading = $state(false);
+    let rawPromptsError = $state<string | null>(null);
+    let rawPrompts = $state<LlmRawPromptRow[]>([]);
+    let rawPromptsSinceHours = $state<number>(24);
+    let rawPromptsLimit = $state<number>(10);
+    let expandedPromptId = $state<string | null>(null);
 
     const summary = $derived(summarizeEvents(usageEvents));
 
@@ -100,6 +111,30 @@
         } finally {
             usageLoading = false;
         }
+    }
+
+    async function refreshRawPrompts(): Promise<void> {
+        rawPromptsLoading = true;
+        rawPromptsError = null;
+
+        try {
+            const resp = (await llmRawPrompts(fetch, {
+                app_id: appId,
+                since_hours: rawPromptsSinceHours,
+                limit: rawPromptsLimit,
+            })) as LlmRawPromptsResponse;
+
+            rawPrompts = resp.prompts ?? [];
+        } catch (e) {
+            rawPromptsError = e instanceof Error ? e.message : String(e);
+            rawPrompts = [];
+        } finally {
+            rawPromptsLoading = false;
+        }
+    }
+
+    function togglePromptExpansion(requestId: string): void {
+        expandedPromptId = expandedPromptId === requestId ? null : requestId;
     }
 
     function summarizeEvents(events: LlmUsageEventRow[]): {
@@ -204,6 +239,7 @@
     onMount(() => {
         void refresh();
         void refreshUsage();
+        void refreshRawPrompts();
 
         // Browser-only: subscribe to prompt signature changes.
         const conn = connectPromptsStream(
@@ -665,6 +701,156 @@
                         {/each}
                     </tbody>
                 </table>
+            </div>
+        {/if}
+    </section>
+
+    <!-- Raw Prompts Section -->
+    <section class="rounded-xl border border-white/10 bg-white/5 p-6">
+        <div class="flex items-center justify-between">
+            <div>
+                <h2 class="text-lg font-semibold text-gray-100">Raw Prompts</h2>
+                <p class="mt-1 text-sm text-gray-300">
+                    View full prompt/response details from recent LLM requests
+                </p>
+            </div>
+
+            <form
+                class="flex flex-wrap items-end gap-2"
+                onsubmit={(e) => {
+                    e.preventDefault();
+                    void refreshRawPrompts();
+                }}
+            >
+                <label class="field w-[140px]">
+                    <span class="field-label">since_hours</span>
+                    <input
+                        type="number"
+                        min="0"
+                        max="8760"
+                        bind:value={rawPromptsSinceHours}
+                        class="input"
+                    />
+                </label>
+
+                <label class="field w-[120px]">
+                    <span class="field-label">limit</span>
+                    <input
+                        type="number"
+                        min="1"
+                        max="100"
+                        bind:value={rawPromptsLimit}
+                        class="input"
+                    />
+                </label>
+
+                <button
+                    type="submit"
+                    class="btn btn-primary"
+                    disabled={rawPromptsLoading}
+                >
+                    {rawPromptsLoading ? "Loading…" : "Apply"}
+                </button>
+            </form>
+        </div>
+
+        {#if rawPromptsError}
+            <div
+                class="mt-4 rounded-xl border border-red-500/30 bg-red-500/10 p-4 text-red-100"
+            >
+                <div class="text-sm font-semibold">Error</div>
+                <div class="mt-2 whitespace-pre-wrap text-sm text-red-100/90">
+                    {rawPromptsError}
+                </div>
+            </div>
+        {/if}
+
+        {#if !rawPromptsLoading && rawPrompts.length === 0}
+            <p class="mt-4 text-sm text-gray-300">
+                No raw prompts found for this time range.
+            </p>
+        {:else}
+            <div class="mt-4 space-y-3">
+                {#each rawPrompts as prompt (prompt.request_id)}
+                    <div
+                        class="rounded-lg border border-white/10 bg-black/10 p-4"
+                    >
+                        <div class="flex items-start justify-between gap-4">
+                            <div class="flex-1 space-y-1">
+                                <div class="flex items-center gap-3 text-xs">
+                                    <span class="font-mono text-gray-300">
+                                        {prompt.request_id}
+                                    </span>
+                                    <span class="text-gray-400">
+                                        {new Date(
+                                            prompt.created_at,
+                                        ).toLocaleString()}
+                                    </span>
+                                    <span class="text-gray-400">
+                                        {prompt.model}
+                                    </span>
+                                </div>
+                                <div class="text-xs text-gray-300">
+                                    app_id: <span class="font-mono">{prompt.app_id ?? "—"}</span>
+                                    &middot; task: <span class="font-mono">{prompt.task ?? "—"}</span>
+                                    &middot; provider: <span class="font-mono">{prompt.provider ?? "—"}</span>
+                                </div>
+                            </div>
+                            <button
+                                type="button"
+                                class="btn btn-sm"
+                                onclick={() =>
+                                    togglePromptExpansion(prompt.request_id)}
+                            >
+                                {expandedPromptId === prompt.request_id
+                                    ? "Hide"
+                                    : "Show"}
+                            </button>
+                        </div>
+
+                        {#if expandedPromptId === prompt.request_id}
+                            <div class="mt-4 space-y-4">
+                                <!-- Prompt text -->
+                                <div>
+                                    <div
+                                        class="text-xs font-semibold uppercase tracking-wide text-gray-400"
+                                    >
+                                        Prompt text
+                                    </div>
+                                    <pre
+                                        class="mt-2 overflow-auto rounded bg-black/30 p-3 text-xs text-gray-200">{prompt.prompt_text}</pre>
+                                </div>
+
+                                <!-- Messages JSON -->
+                                <div>
+                                    <div
+                                        class="text-xs font-semibold uppercase tracking-wide text-gray-400"
+                                    >
+                                        Messages (JSON)
+                                    </div>
+                                    <pre
+                                        class="mt-2 overflow-auto rounded bg-black/30 p-3 text-xs text-gray-200">{JSON.stringify(prompt.messages, null, 2)}</pre>
+                                </div>
+
+                                <!-- Metadata -->
+                                <div class="grid gap-2 text-xs md:grid-cols-3">
+                                    <div>
+                                        <span class="text-gray-400">message_count:</span>
+                                        <span class="text-gray-200">{fmtInt(prompt.message_count)}</span>
+                                    </div>
+                                    <div>
+                                        <span class="text-gray-400">prompt_chars:</span>
+                                        <span class="text-gray-200">{fmtInt(prompt.prompt_chars)}</span>
+                                    </div>
+                                    <div>
+                                        <span class="text-gray-400">prompt_sha256:</span>
+                                        <span class="font-mono text-gray-200">{prompt.prompt_sha256 ?? "—"}</span>
+                                    </div>
+                                </div>
+                            </div>
+                        {/if}
+                    </div>
+                {/each}
             </div>
         {/if}
     </section>
