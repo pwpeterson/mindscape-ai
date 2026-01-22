@@ -53,7 +53,7 @@ export type LlmUsageEventsResponse = {
     events: LlmUsageEventRow[];
     source: {
         type: "supabase";
-        table: "llm_usage_events";
+        table: "llm_usage_events" | "model_proxy_requests";
     };
 };
 
@@ -84,7 +84,7 @@ export type LlmUsageDailyResponse = {
     rows: LlmUsageDailyRow[];
     source: {
         type: "supabase";
-        view: "llm_usage_daily";
+        view: "llm_usage_daily" | "model_proxy_daily_stats";
     };
 };
 
@@ -119,7 +119,7 @@ export type LlmRawPromptsResponse = {
     prompts: LlmRawPromptRow[];
     source: {
         type: "supabase";
-        table: "llm_raw_prompts";
+        table: "llm_raw_prompts" | "model_proxy_payloads";
     };
 };
 

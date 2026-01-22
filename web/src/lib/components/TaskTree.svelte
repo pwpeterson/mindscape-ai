@@ -1,10 +1,9 @@
 <script lang="ts">
-	import type { ConportProgressEntry } from "$lib/api/conport";
-	import type { ProgressTreeNode } from "$lib/types/progress";
+	import type { ProgressTreeNodeWithWbs } from "$lib/types/progress";
 	import TaskTree from "./TaskTree.svelte";
 
 	let { nodes, itemHref } = $props<{
-		nodes: ProgressTreeNode[];
+		nodes: ProgressTreeNodeWithWbs[];
 		itemHref: (id: number) => string;
 	}>();
 
@@ -21,37 +20,20 @@
 		}
 	}
 
-	function stripPriorityPrefix(description: string): string {
-		// Hide the [P#] prefix in the UI, but keep it in the stored ConPort description.
-		return description.replace(/^\s*\[p\d+\]\s*/i, "");
-	}
-
-	function isPhaseDescription(description: string): boolean {
-		// Phase nodes are intended to look like: "Phase 3 — ..." (dash variants supported)
-		// Notes look like: "Phase 3: ..." (colon) and should NOT be treated as phases.
-		//
-		// Avoid brittle matching on exact dash glyphs by:
-		// 1) Normalizing known prefixes ([P#], optional "P-###")
-		// 2) Matching "Phase <n>"
-		// 3) Inspecting the next character:
-		//    - reject ":" (note-style)
-		//    - reject letters/digits (e.g., "Phase 2 parent..." is not a phase node)
-		const cleaned = stripPriorityPrefix(description)
-			.trimStart()
-			.replace(/^p-\d+\s+/i, "");
-
-		const m = cleaned.match(/^phase\s+\d+\s*(.)/i);
-		if (!m) return false;
-
-		const next = m[1];
-		if (next === ":") return false;
-		if (/[a-z0-9]/i.test(next)) return false;
-
-		return true;
+	function entityIcon(type: string): string {
+		switch (type) {
+			case "project":
+				return "📦";
+			case "phase":
+				return "📋";
+			case "task":
+				return "✓";
+			default:
+				return "•";
+		}
 	}
 
 	function phaseMarker(status: string): string {
-		// Phase markers: 🟩 In progress, 🟦 Done, 🟨 Pending action
 		switch (status) {
 			case "IN_PROGRESS":
 				return "🟩";
@@ -75,26 +57,35 @@
 		}
 	}
 
+	function getTitle(node: ProgressTreeNodeWithWbs): string {
+		return node.entry.wbs_meta?.title ?? stripPriorityPrefix(node.entry.description);
+	}
+
+	function stripPriorityPrefix(description: string): string {
+		return description.replace(/^\s*\[p\d+\]\s*/i, "");
+	}
+
 	function displayDescription(description: string): string {
-		// Hide the [P#] prefix in the UI, but keep it in the stored ConPort description.
 		return description.trim().replace(/^\[p\d+\]\s*/i, "");
 	}
 
-	function isNoteEntry(entry: ConportProgressEntry): boolean {
-		// Treat narrative milestone summaries like "Phase 1: ... delivered ..." as notes.
-		// (Do NOT match "Phase 1 — ..." which we treat as a phase node.)
-		return /^\s*phase\s+\d+\s*:/i.test(entry.description);
+	function isPhaseNode(node: ProgressTreeNodeWithWbs): boolean {
+		return node.entry.wbs_meta?.entity_type === "phase";
 	}
 
-	function splitChildren(children: ProgressTreeNode[]): {
-		tasks: ProgressTreeNode[];
-		notes: ProgressTreeNode[];
+	function isNoteEntry(node: ProgressTreeNodeWithWbs): boolean {
+		return /^\s*phase\s+\d+\s*:/i.test(node.entry.description);
+	}
+
+	function splitChildren(children: ProgressTreeNodeWithWbs[]): {
+		tasks: ProgressTreeNodeWithWbs[];
+		notes: ProgressTreeNodeWithWbs[];
 	} {
-		const tasks: ProgressTreeNode[] = [];
-		const notes: ProgressTreeNode[] = [];
+		const tasks: ProgressTreeNodeWithWbs[] = [];
+		const notes: ProgressTreeNodeWithWbs[] = [];
 
 		for (const c of children) {
-			if (isNoteEntry(c.entry)) notes.push(c);
+			if (isNoteEntry(c)) notes.push(c);
 			else tasks.push(c);
 		}
 
@@ -104,12 +95,15 @@
 
 <ul class="space-y-1">
 	{#each nodes as node (node.entry.id)}
+		{@const title = getTitle(node)}
+		{@const entityType = node.entry.wbs_meta?.entity_type ?? "unknown"}
+		{@const isPhase = isPhaseNode(node)}
 		<li class="rounded-md border border-white/10 bg-black/10">
 			<details open={node.entry.status === "IN_PROGRESS"}>
 				<summary class="cursor-pointer list-none select-none px-3 py-2">
 					<div class="flex items-start justify-between gap-3">
 						<div class="flex min-w-0 items-start gap-2">
-							{#if isPhaseDescription(node.entry.description)}
+							{#if isPhase}
 								<span
 									class="mt-0.5 shrink-0"
 									aria-hidden="true"
@@ -118,16 +112,36 @@
 								>
 							{:else}
 								<span
-									class={`mt-1.5 inline-block h-2 w-2 shrink-0 rounded-full ${statusColor(node.entry.status)}`}
-								></span>
+									class="mt-0.5 shrink-0"
+									title={entityType}
+									>{entityIcon(entityType)}</span
+								>
 							{/if}
-							<a
-								href={itemHref(node.entry.id)}
-								class="min-w-0 truncate text-sm font-medium hover:underline underline-offset-4 decoration-white/20 hover:decoration-white/60"
-								onclick={(e) => e.stopPropagation()}
-							>
-								{displayDescription(node.entry.description)}
-							</a>
+							<div class="min-w-0">
+								<a
+									href={itemHref(node.entry.id)}
+									class="min-w-0 truncate text-sm font-medium hover:underline underline-offset-4 decoration-white/20 hover:decoration-white/60"
+									onclick={(e) => e.stopPropagation()}
+								>
+									{title}
+								</a>
+								{#if node.entry.wbs_meta?.priority}
+									<span class="ml-1 text-xs opacity-60">
+										[{node.entry.wbs_meta.priority}]
+									</span>
+								{/if}
+								{#if node.entry.wbs_meta?.tags && node.entry.wbs_meta.tags.length > 0}
+									<div class="mt-1 flex flex-wrap gap-1">
+										{#each node.entry.wbs_meta.tags.slice(0, 3) as tag}
+											<span
+												class="rounded bg-gray-700 px-1 py-0.5 text-xs"
+											>
+												{tag}
+											</span>
+										{/each}
+									</div>
+								{/if}
+							</div>
 						</div>
 
 						<div class="flex items-center gap-2">

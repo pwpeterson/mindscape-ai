@@ -1,24 +1,27 @@
 """LLM usage analytics API routes (Supabase-backed).
 
 Backed by Supabase Postgres objects created in:
-- `supabase/migrations/20260115_0001_llm_usage_events.sql`
-- `supabase/migrations/20260115_0002_llm_raw_prompts.sql`
+- `supabase/migrations/20260119_model_proxy_tables_reengineering.sql`
+
+These endpoints intentionally keep the original `/llm-usage/*` URLs to avoid
+churn in the web UI, but the underlying data source is now the `model_proxy_*`
+schema.
 
 Design goals:
 - Server-side only: the browser UI never talks to Supabase directly.
-- Privacy: no raw prompts; only hashes/aggregates already stored in Supabase.
-- Simple filters suitable for the Prompts panel: app_id/task/model/provider + time range.
+- Privacy: usage endpoints never return raw prompts.
+- Support filters suitable for the Prompts panel: app_id/task/model/provider + time range.
 
 Endpoints:
-- GET /api/v1/llm-usage/events
-- GET /api/v1/llm-usage/daily
-- GET /api/v1/llm-usage/raw-prompts
+- GET /api/v1/llm-usage/events      -> model_proxy_requests
+- GET /api/v1/llm-usage/daily       -> model_proxy_daily_stats
+- GET /api/v1/llm-usage/raw-prompts -> model_proxy_payloads (privacy-sensitive)
 """
 
 from __future__ import annotations
 
 import re
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import Any, Final
 
 import httpx
@@ -35,7 +38,7 @@ PROVIDER_QUERY_MAX_LEN: Final[int] = 50
 MODEL_QUERY_MAX_LEN: Final[int] = 200
 ROUTE_QUERY_MAX_LEN: Final[int] = 200
 
-# Patterns based on migration constraints
+# Patterns based on common constraints (tables are more permissive, but we keep these guardrails)
 APP_ID_RE: Final[re.Pattern[str]] = re.compile(r"^[A-Za-z0-9_.-]+$")
 TASK_RE: Final[re.Pattern[str]] = re.compile(r"^[A-Za-z0-9_.:-]+$")
 PROVIDER_RE: Final[re.Pattern[str]] = re.compile(r"^[A-Za-z0-9_.-]+$")
@@ -102,6 +105,21 @@ def _get_client_or_503() -> Any:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
 
 
+def _extract_messages_from_request_json(request_json: Any) -> Any:
+    """Best-effort extraction of chat messages from model-proxy request payload."""
+    if isinstance(request_json, dict):
+        # Standard OpenAI-style
+        if isinstance(request_json.get("messages"), list):
+            return request_json.get("messages")
+
+        # Some wrappers may nest under input
+        input_obj = request_json.get("input")
+        if isinstance(input_obj, dict) and isinstance(input_obj.get("messages"), list):
+            return input_obj.get("messages")
+
+    return None
+
+
 @router.get("/events")
 async def llm_usage_events(
     app_id: str | None = Query(default=None),
@@ -113,6 +131,8 @@ async def llm_usage_events(
     limit: int = Query(default=50, ge=1, le=500),
 ) -> dict[str, Any]:
     """List recent LLM usage events.
+
+    Source: Supabase `public.model_proxy_requests`.
 
     Returns a subset of safe columns for display in the UI.
     """
@@ -128,7 +148,7 @@ async def llm_usage_events(
     since_iso = _iso(since_dt)
 
     try:
-        query = client.table("llm_usage_events").select(
+        query = client.table("model_proxy_requests").select(
             ",".join(
                 [
                     "id",
@@ -136,22 +156,21 @@ async def llm_usage_events(
                     "app_id",
                     "task",
                     "user_id",
-                    "agent_id",
                     "project_id",
-                    "provider",
+                    "provider_name",
                     "model",
                     "input_tokens",
                     "output_tokens",
                     "total_tokens",
                     "estimated_cost",
                     "prompt_sha256",
-                    "prompt_chars",
+                    "prompt_char_count",
                     "message_count",
                     "route",
                     "status_code",
                     "latency_ms",
                     "stream",
-                    "created_at",
+                    "request_timestamp",
                 ]
             )
         )
@@ -161,23 +180,55 @@ async def llm_usage_events(
         if task is not None:
             query = query.eq("task", task)
         if provider is not None:
-            query = query.eq("provider", provider)
+            query = query.eq("provider_name", provider)
         if model is not None:
             query = query.eq("model", model)
         if route is not None:
             query = query.eq("route", route)
 
-        query = query.gte("created_at", since_iso).order("created_at", desc=True).limit(limit)
+        query = query.gte("request_timestamp", since_iso).order("request_timestamp", desc=True).limit(limit)
 
         resp = query.execute()
     except httpx.HTTPError as exc:
-        raise HTTPException(status_code=503, detail="Supabase is unreachable (llm usage).") from exc
+        raise HTTPException(status_code=503, detail="Supabase is unreachable (model proxy usage).") from exc
     except Exception as exc:  # noqa: BLE001
-        raise HTTPException(status_code=500, detail=f"Failed to query llm usage events: {exc}") from exc
+        raise HTTPException(status_code=500, detail=f"Failed to query model proxy requests: {exc}") from exc
 
     data = getattr(resp, "data", None)
     if not isinstance(data, list):
-        raise HTTPException(status_code=500, detail="Unexpected response from Supabase (llm_usage_events)")
+        raise HTTPException(status_code=500, detail="Unexpected response from Supabase (model_proxy_requests)")
+
+    # Map model_proxy_requests -> legacy response keys expected by the web UI.
+    events: list[dict[str, Any]] = []
+    for r in data:
+        if not isinstance(r, dict):
+            continue
+
+        events.append(
+            {
+                "id": r.get("id"),
+                "request_id": r.get("request_id"),
+                "app_id": r.get("app_id"),
+                "task": r.get("task"),
+                "user_id": r.get("user_id"),
+                "agent_id": None,  # legacy field; not tracked in model_proxy_requests
+                "project_id": r.get("project_id"),
+                "provider": r.get("provider_name"),
+                "model": r.get("model"),
+                "input_tokens": r.get("input_tokens") or 0,
+                "output_tokens": r.get("output_tokens") or 0,
+                "total_tokens": r.get("total_tokens") or 0,
+                "estimated_cost": r.get("estimated_cost"),
+                "prompt_sha256": r.get("prompt_sha256"),
+                "prompt_chars": r.get("prompt_char_count"),
+                "message_count": r.get("message_count"),
+                "route": r.get("route"),
+                "status_code": r.get("status_code"),
+                "latency_ms": r.get("latency_ms"),
+                "stream": bool(r.get("stream")),
+                "created_at": r.get("request_timestamp"),
+            }
+        )
 
     return {
         "app_id": app_id,
@@ -189,9 +240,9 @@ async def llm_usage_events(
             "since_hours": since_hours,
             "limit": limit,
         },
-        "count": len(data),
-        "events": [r for r in data if isinstance(r, dict)],
-        "source": {"type": "supabase", "table": "llm_usage_events"},
+        "count": len(events),
+        "events": events,
+        "source": {"type": "supabase", "table": "model_proxy_requests"},
     }
 
 
@@ -204,63 +255,86 @@ async def llm_usage_daily(
     days: int = Query(default=30, ge=1, le=365),
     limit: int = Query(default=90, ge=1, le=365),
 ) -> dict[str, Any]:
-    """Return daily rollups from Supabase `public.llm_usage_daily` view."""
+    """Return daily rollups from Supabase `public.model_proxy_daily_stats` materialized view."""
     _validate_app_id(app_id)
     _validate_task(task)
     _validate_provider(provider)
     _validate_model(model)
 
+    # model_proxy_daily_stats does not include task-level aggregation.
+    if task is not None:
+        raise HTTPException(status_code=400, detail="task filter is not supported for daily stats")
+
     client = _get_client_or_503()
 
-    since_dt = _utc_now() - timedelta(days=int(days))
-    since_iso = _iso(since_dt)
+    since_day: date = (_utc_now() - timedelta(days=int(days))).date()
+    since_day_iso = since_day.isoformat()
 
     try:
-        query = client.table("llm_usage_daily").select(
+        query = client.table("model_proxy_daily_stats").select(
             ",".join(
                 [
-                    "day",
+                    "stat_date",
                     "app_id",
-                    "task",
-                    "provider",
+                    "project_id",
                     "model",
-                    "requests",
-                    "input_tokens",
-                    "output_tokens",
+                    "provider_name",
+                    "request_count",
+                    "total_input_tokens",
+                    "total_output_tokens",
                     "total_tokens",
-                    "estimated_cost",
+                    "total_estimated_cost",
                 ]
             )
         )
 
         if app_id is not None:
             query = query.eq("app_id", app_id)
-        if task is not None:
-            query = query.eq("task", task)
         if provider is not None:
-            query = query.eq("provider", provider)
+            query = query.eq("provider_name", provider)
         if model is not None:
             query = query.eq("model", model)
 
-        query = query.gte("day", since_iso).order("day", desc=True).limit(limit)
+        query = query.gte("stat_date", since_day_iso).order("stat_date", desc=True).limit(limit)
 
         resp = query.execute()
     except httpx.HTTPError as exc:
-        raise HTTPException(status_code=503, detail="Supabase is unreachable (llm usage).") from exc
+        raise HTTPException(status_code=503, detail="Supabase is unreachable (model proxy daily stats).") from exc
     except Exception as exc:  # noqa: BLE001
-        raise HTTPException(status_code=500, detail=f"Failed to query llm usage daily rollups: {exc}") from exc
+        raise HTTPException(status_code=500, detail=f"Failed to query model proxy daily rollups: {exc}") from exc
 
     data = getattr(resp, "data", None)
     if not isinstance(data, list):
-        raise HTTPException(status_code=500, detail="Unexpected response from Supabase (llm_usage_daily)")
+        raise HTTPException(status_code=500, detail="Unexpected response from Supabase (model_proxy_daily_stats)")
+
+    # Map model_proxy_daily_stats -> legacy response keys expected by the web UI.
+    rows: list[dict[str, Any]] = []
+    for r in data:
+        if not isinstance(r, dict):
+            continue
+        rows.append(
+            {
+                "day": r.get("stat_date"),
+                "app_id": r.get("app_id"),
+                "task": None,
+                "provider": r.get("provider_name"),
+                "model": r.get("model"),
+                "requests": r.get("request_count") or 0,
+                "input_tokens": r.get("total_input_tokens") or 0,
+                "output_tokens": r.get("total_output_tokens") or 0,
+                "total_tokens": r.get("total_tokens") or 0,
+                "estimated_cost": r.get("total_estimated_cost"),
+            }
+        )
 
     return {
         "app_id": app_id,
         "filters": {"task": task, "provider": provider, "model": model, "days": days, "limit": limit},
-        "count": len(data),
-        "rows": [r for r in data if isinstance(r, dict)],
-        "source": {"type": "supabase", "view": "llm_usage_daily"},
+        "count": len(rows),
+        "rows": rows,
+        "source": {"type": "supabase", "view": "model_proxy_daily_stats"},
     }
+
 
 @router.get("/raw-prompts")
 async def llm_raw_prompts(
@@ -273,8 +347,11 @@ async def llm_raw_prompts(
 ) -> dict[str, Any]:
     """List raw prompts (privacy-sensitive, stored only when explicitly enabled).
 
-    Returns raw prompt data from `public.llm_raw_prompts` table.
-    This table is populated only when STORE_RAW_PROMPT=true in model-proxy.
+    Source: Supabase `public.model_proxy_payloads`.
+
+    IMPORTANT:
+    - `prompt_text` is populated only if model-proxy has STORE_PAYLOAD_PROMPT_TEXT enabled.
+    - Full request/response JSON is stored only if ENABLE_SUPABASE_PAYLOAD_LOGGING is enabled.
     """
     _validate_app_id(app_id)
     _validate_task(task)
@@ -287,7 +364,7 @@ async def llm_raw_prompts(
     since_iso = _iso(since_dt)
 
     try:
-        query = client.table("llm_raw_prompts").select(
+        query = client.table("model_proxy_payloads").select(
             ",".join(
                 [
                     "request_id",
@@ -295,7 +372,7 @@ async def llm_raw_prompts(
                     "task",
                     "provider",
                     "model",
-                    "messages",
+                    "request_json",
                     "prompt_text",
                     "prompt_sha256",
                     "prompt_chars",
@@ -319,13 +396,36 @@ async def llm_raw_prompts(
 
         resp = query.execute()
     except httpx.HTTPError as exc:
-        raise HTTPException(status_code=503, detail="Supabase is unreachable (raw prompts).") from exc
+        raise HTTPException(status_code=503, detail="Supabase is unreachable (model proxy payloads).") from exc
     except Exception as exc:  # noqa: BLE001
-        raise HTTPException(status_code=500, detail=f"Failed to query raw prompts: {exc}") from exc
+        raise HTTPException(status_code=500, detail=f"Failed to query model proxy payloads: {exc}") from exc
 
     data = getattr(resp, "data", None)
     if not isinstance(data, list):
-        raise HTTPException(status_code=500, detail="Unexpected response from Supabase (llm_raw_prompts)")
+        raise HTTPException(status_code=500, detail="Unexpected response from Supabase (model_proxy_payloads)")
+
+    prompts: list[dict[str, Any]] = []
+    for r in data:
+        if not isinstance(r, dict):
+            continue
+
+        request_json = r.get("request_json")
+        prompts.append(
+            {
+                "request_id": r.get("request_id"),
+                "app_id": r.get("app_id"),
+                "task": r.get("task"),
+                "provider": r.get("provider"),
+                "model": r.get("model"),
+                "messages": _extract_messages_from_request_json(request_json),
+                "prompt_text": r.get("prompt_text") or "",
+                "prompt_sha256": r.get("prompt_sha256"),
+                "prompt_chars": r.get("prompt_chars"),
+                "message_count": r.get("message_count"),
+                "metadata": r.get("metadata") or {},
+                "created_at": r.get("created_at"),
+            }
+        )
 
     return {
         "app_id": app_id,
@@ -336,7 +436,7 @@ async def llm_raw_prompts(
             "since_hours": since_hours,
             "limit": limit,
         },
-        "count": len(data),
-        "prompts": [r for r in data if isinstance(r, dict)],
-        "source": {"type": "supabase", "table": "llm_raw_prompts"},
+        "count": len(prompts),
+        "prompts": prompts,
+        "source": {"type": "supabase", "table": "model_proxy_payloads"},
     }

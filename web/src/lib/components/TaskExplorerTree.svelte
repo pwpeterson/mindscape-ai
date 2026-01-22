@@ -1,5 +1,5 @@
 <script lang="ts">
-	import type { ProgressTreeNode } from "$lib/types/progress";
+	import type { ProgressTreeNodeWithWbs } from "$lib/types/progress";
 	import { onMount } from "svelte";
 	import TaskExplorerTree from "./TaskExplorerTree.svelte";
 
@@ -9,15 +9,13 @@
 		level = 0,
 		showIdPrefix = false,
 	} = $props<{
-		nodes: ProgressTreeNode[];
+		nodes: ProgressTreeNodeWithWbs[];
 		itemHref: (id: number) => string;
 		level?: number;
 		showIdPrefix?: boolean;
 	}>();
 
 	function idPrefix(id: number): string {
-		// UI-only prefix for progress entry IDs. Use P-nnn (e.g. P-007) to match
-		// the project's "P-#" naming convention rather than legacy "T###".
 		return `P-${String(id).padStart(3, "0")}`;
 	}
 
@@ -34,8 +32,20 @@
 		}
 	}
 
+	function entityIcon(type: string): string {
+		switch (type) {
+			case "project":
+				return "📦";
+			case "phase":
+				return "📋";
+			case "task":
+				return "✓";
+			default:
+				return "•";
+		}
+	}
+
 	function phaseMarker(status: string): string {
-		// Phase markers: 🟩 In progress, 🟦 Done, 🟨 Pending action
 		switch (status) {
 			case "IN_PROGRESS":
 				return "🟩";
@@ -60,12 +70,14 @@
 	}
 
 	function indentStyle(): string {
-		// VS Code-ish: small base indent + fixed indent per level.
 		return `padding-left: ${0.75 + level * 1.0}rem;`;
 	}
 
+	function getTitle(node: ProgressTreeNodeWithWbs): string {
+		return node.entry.wbs_meta?.title ?? stripPriorityPrefix(node.entry.description);
+	}
+
 	function stripPriorityPrefix(description: string): string {
-		// Hide the [P#] prefix in the UI, but keep it in the stored ConPort description.
 		return description.replace(/^\s*\[p\d+\]\s*/i, "");
 	}
 
@@ -73,12 +85,8 @@
 		title: string;
 		notes: string[];
 	} {
-		// Convention: multi-line descriptions are "title" on first line, followed by
-		// status updates / narrative lines. We render those extra lines in the Notes panel.
 		const cleaned = stripPriorityPrefix(description).trim();
 		const lines = cleaned.split(/\r?\n/).map((l) => l.trimEnd());
-
-		// Treat blank lines as separators; keep only non-empty lines for display.
 		const nonEmpty = lines.filter((l) => l.trim().length > 0);
 		const title = nonEmpty[0] ?? "";
 		const notes = nonEmpty.slice(1);
@@ -90,66 +98,33 @@
 	}
 
 	function isNoteDescription(description: string): boolean {
-		// Notes are narrative entries we want to show in a Notes subpanel.
-		//
-		// Supported formats (optional priority prefix like "[P1]"):
-		// - "Phase 1: ..." (legacy phase notes)
-		// - "Note: ..." / "Notes: ..."
-		// - "[note]: ..." / "[notes]: ..."
 		return /^\s*(?:\[p\d+\]\s*)?(?:phase\s+\d+\s*:|notes?\s*[:—–-]|\[notes?\]\s*[:—–-])/i.test(
 			description,
 		);
 	}
 
-	// UI-only overrides for note classification.
-	// Requested: treat 29 as a task (child of 28) so its updates bubble into 28's Notes panel.
 	const UI_FORCE_TASK_IDS = new Set<number>([29]);
-
-	// UI-only overrides for how certain entries' status-update lines are rendered when
-	// aggregated into a parent's Notes subpanel.
-	// Requested: show 29's status updates *inside* 28's Notes without repeating the 29 title.
 	const UI_STATUS_ONLY_IDS = new Set<number>([29]);
 
-	function isNoteNode(node: ProgressTreeNode): boolean {
+	function isNoteNode(node: ProgressTreeNodeWithWbs): boolean {
 		if (UI_FORCE_TASK_IDS.has(node.entry.id)) return false;
 		return isNoteDescription(node.entry.description);
 	}
 
 	function cleanStatusUpdateLine(line: string): string {
-		// Many status updates are stored like "— DONE ..."; normalize for display.
 		return line.replace(/^\s*[—–-]\s*/, "").trim();
 	}
 
-	function isPhaseDescription(description: string): boolean {
-		// Phase nodes are intended to look like: "Phase 3 — ..." (dash variants supported)
-		// Notes look like: "Phase 3: ..." (colon) and should NOT be treated as phases.
-		//
-		// Avoid brittle matching on exact dash glyphs by:
-		// 1) Normalizing known prefixes ([P#], optional "P-###")
-		// 2) Matching "Phase <n>"
-		// 3) Inspecting the next character:
-		//    - reject ":" (note-style)
-		//    - reject letters/digits (e.g., "Phase 2 parent..." is not a phase node)
-		const cleaned = stripPriorityPrefix(description)
-			.trimStart()
-			.replace(/^p-\d+\s+/i, "");
-
-		const m = cleaned.match(/^phase\s+\d+\s*(.)/i);
-		if (!m) return false;
-
-		const next = m[1];
-		if (next === ":") return false;
-		if (/[a-z0-9]/i.test(next)) return false;
-
-		return true;
+	function isPhaseNode(node: ProgressTreeNodeWithWbs): boolean {
+		return node.entry.wbs_meta?.entity_type === "phase";
 	}
 
-	function splitChildren(children: ProgressTreeNode[]): {
-		tasks: ProgressTreeNode[];
-		notes: ProgressTreeNode[];
+	function splitChildren(children: ProgressTreeNodeWithWbs[]): {
+		tasks: ProgressTreeNodeWithWbs[];
+		notes: ProgressTreeNodeWithWbs[];
 	} {
-		const tasks: ProgressTreeNode[] = [];
-		const notes: ProgressTreeNode[] = [];
+		const tasks: ProgressTreeNodeWithWbs[] = [];
+		const notes: ProgressTreeNodeWithWbs[] = [];
 
 		for (const c of children) {
 			if (isNoteNode(c)) notes.push(c);
@@ -163,25 +138,17 @@
 		| { kind: "text"; key: string; text: string }
 		| { kind: "link"; key: string; text: string; href: string };
 
-	function noteContextPrefix(node: ProgressTreeNode): string {
+	function noteContextPrefix(node: ProgressTreeNodeWithWbs): string {
 		return showIdPrefix ? `${idPrefix(node.entry.id)} ` : "";
 	}
 
-	function collectAggregatedNotes(node: ProgressTreeNode): AggregatedNote[] {
-		// Policy: child tasks do NOT show their own Notes subpanels. Instead, we bubble
-		// all notes (inline multi-line description + explicit note-children) to the
-		// root node's Notes panel (level === 0).
-		//
-		// This keeps task titles clean while still preserving status updates.
+	function collectAggregatedNotes(node: ProgressTreeNodeWithWbs): AggregatedNote[] {
 		const out: AggregatedNote[] = [];
-
 		const inline = splitDescription(node.entry.description);
-		const title =
-			inline.title || displayDescription(node.entry.description);
+		const title = getTitle(node);
 		const ctx = `${noteContextPrefix(node)}${title}`.trim();
 		const statusOnly = UI_STATUS_ONLY_IDS.has(node.entry.id);
 
-		// 1) Inline multi-line notes from this node's description
 		for (let i = 0; i < inline.notes.length; i += 1) {
 			const cleaned = cleanStatusUpdateLine(inline.notes[i]);
 			if (!cleaned) continue;
@@ -197,18 +164,16 @@
 			});
 		}
 
-		// 2) Explicit note-children (render as links)
 		for (const child of node.children) {
 			if (!isNoteNode(child)) continue;
 			out.push({
 				kind: "link",
 				key: `l:${child.entry.id}`,
 				href: itemHref(child.entry.id),
-				text: `${noteContextPrefix(child)}${displayDescription(child.entry.description)}`.trim(),
+				text: `${noteContextPrefix(child)}${getTitle(child)}`.trim(),
 			});
 		}
 
-		// 3) Recurse into task-children
 		for (const child of node.children) {
 			if (isNoteNode(child)) continue;
 			out.push(...collectAggregatedNotes(child));
@@ -217,8 +182,6 @@
 		return out;
 	}
 
-	// Persist phase expand/collapse state (so collapsed phases stay collapsed on refresh).
-	// Stored as a map of { [phaseId]: boolean } in localStorage.
 	const PHASE_OPEN_STORAGE_KEY = "mindscape.conport.phaseOpen.v1";
 	let phaseOpenLoaded = $state(false);
 	let phaseOpenById = $state<Record<number, boolean>>({});
@@ -260,7 +223,6 @@
 	}
 
 	function getPhaseOpen(id: number, defaultOpen: boolean): boolean {
-		// During SSR or before storage is loaded, fall back to the existing default behavior.
 		if (!phaseOpenLoaded) return defaultOpen;
 		return phaseOpenById[id] ?? defaultOpen;
 	}
@@ -280,27 +242,26 @@
 
 <ul class="select-none">
 	{#each nodes as node (node.entry.id)}
-		{@const inline = splitDescription(node.entry.description)}
+		{@const title = getTitle(node)}
+		{@const entityType = node.entry.wbs_meta?.entity_type ?? "unknown"}
+		{@const isPhase = isPhaseNode(node)}
 		<li>
 			{#if node.children.length > 0}
 				{@const split = splitChildren(node.children)}
 				{@const tasks = split.tasks}
-				{@const isPhaseNode = isPhaseDescription(
-					node.entry.description,
-				)}
 
 				<details
-					open={isPhaseNode
+					open={isPhase
 						? getPhaseOpen(node.entry.id, level < 1)
 						: level < 1}
 					ontoggle={(e) =>
-						isPhaseNode && onPhaseToggle(node.entry.id, e)}
+						isPhase && onPhaseToggle(node.entry.id, e)}
 				>
 					<summary
 						class="flex items-center gap-2 rounded-md py-1 pr-2 text-sm text-gray-100 hover:bg-white/5"
 						style={indentStyle()}
 					>
-						{#if isPhaseNode}
+						{#if isPhase}
 							<span
 								class="shrink-0"
 								aria-hidden="true"
@@ -309,19 +270,23 @@
 							>
 						{:else}
 							<span
-								class={`inline-block h-2 w-2 shrink-0 rounded-full ${statusColor(node.entry.status)}`}
-							></span>
+								class="shrink-0"
+								title={entityType}
+								>{entityIcon(entityType)}</span
+							>
 						{/if}
 						<a
 							href={itemHref(node.entry.id)}
 							class="min-w-0 truncate hover:underline underline-offset-4 decoration-white/20 hover:decoration-white/60"
 							onclick={(e) => e.stopPropagation()}
 						>
-							{showIdPrefix
-								? `${idPrefix(node.entry.id)} `
-								: ""}{inline.title ||
-								displayDescription(node.entry.description)}
+							{showIdPrefix ? `${idPrefix(node.entry.id)} ` : ""}{title}
 						</a>
+						{#if node.entry.wbs_meta?.priority}
+							<span class="ml-1 text-xs opacity-60">
+								[{node.entry.wbs_meta.priority}]
+							</span>
+						{/if}
 					</summary>
 
 					<div class="mt-0.5">
@@ -338,7 +303,6 @@
 
 				{#if level === 0}
 					{@const aggregated = collectAggregatedNotes(node)}
-					<!-- Root nodes get a Notes subpanel; child tasks do not. -->
 					<details
 						class="mt-2 rounded-md border border-white/10 bg-black/10 p-2"
 						style={indentStyle()}
@@ -378,7 +342,7 @@
 					</details>
 				{/if}
 			{:else if !isNoteNode(node)}
-				{#if isPhaseDescription(node.entry.description)}
+				{#if isPhase}
 					<details
 						open={getPhaseOpen(node.entry.id, level < 1)}
 						ontoggle={(e) => onPhaseToggle(node.entry.id, e)}
@@ -398,11 +362,13 @@
 								class="min-w-0 truncate hover:underline underline-offset-4 decoration-white/20 hover:decoration-white/60"
 								onclick={(e) => e.stopPropagation()}
 							>
-								{showIdPrefix
-									? `${idPrefix(node.entry.id)} `
-									: ""}{inline.title ||
-									displayDescription(node.entry.description)}
+								{showIdPrefix ? `${idPrefix(node.entry.id)} ` : ""}{title}
 							</a>
+							{#if node.entry.wbs_meta?.priority}
+								<span class="ml-1 text-xs opacity-60">
+									[{node.entry.wbs_meta.priority}]
+								</span>
+							{/if}
 						</summary>
 
 						<div class="mt-0.5"></div>
@@ -413,17 +379,21 @@
 						style={indentStyle()}
 					>
 						<span
-							class={`inline-block h-2 w-2 shrink-0 rounded-full ${statusColor(node.entry.status)}`}
-						></span>
+							class="shrink-0"
+							title={entityType}
+							>{entityIcon(entityType)}</span
+						>
 						<a
 							href={itemHref(node.entry.id)}
 							class="min-w-0 truncate hover:underline underline-offset-4 decoration-white/20 hover:decoration-white/60"
 						>
-							{showIdPrefix
-								? `${idPrefix(node.entry.id)} `
-								: ""}{inline.title ||
-								displayDescription(node.entry.description)}
+							{showIdPrefix ? `${idPrefix(node.entry.id)} ` : ""}{title}
 						</a>
+						{#if node.entry.wbs_meta?.priority}
+							<span class="ml-1 text-xs opacity-60">
+								[{node.entry.wbs_meta.priority}]
+							</span>
+						{/if}
 					</div>
 				{/if}
 			{/if}

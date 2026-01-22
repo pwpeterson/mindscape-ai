@@ -3,25 +3,34 @@
     import { onMount } from "svelte";
 
     import TaskExplorerTree from "$lib/components/TaskExplorerTree.svelte";
-    import type { ProgressTreeNode } from "$lib/types/progress";
+    import type {
+        ProgressTreeNodeWithWbs,
+        ProgressEntryWithWbs,
+        WbsMeta,
+    } from "$lib/types/progress";
 
     import type {
         ConportDashboardResponse,
         ConportProgressEntry,
         ConportProgressListResponse,
+        ConportCustomDataListResponse,
     } from "$lib/api/conport";
-    import { conportDashboard, conportProgressList } from "$lib/api/conport";
+    import {
+        conportDashboard,
+        conportProgressList,
+        conportCustomDataList,
+    } from "$lib/api/conport";
     import { connectEventsStream } from "$lib/api/events";
 
     const TASK_TREE_LIMIT = 500;
-
 
     let loading = $state(true);
     let error = $state<string | null>(null);
 
     let data = $state<ConportDashboardResponse | null>(null);
-    let treeEntries = $state<ConportProgressEntry[]>([]);
-    let tree = $state<ProgressTreeNode[]>([]);
+    let treeEntries = $state<ProgressEntryWithWbs[]>([]);
+    let tree = $state<ProgressTreeNodeWithWbs[]>([]);
+    let wbsMetaMap = $state<Map<number, WbsMeta>>(new Map());
 
     const AUTO_REFRESH_MIN_INTERVAL_MS = 600_000; // 10 minutes
     let lastAutoRefreshAtMs = $state<number>(0);
@@ -35,15 +44,17 @@
     }
 
     let planTitle = $state<string | null>(null);
-    let panelTree = $state<ProgressTreeNode[]>([]);
+    let panelTree = $state<ProgressTreeNodeWithWbs[]>([]);
 
-    let todoTree = $state<ProgressTreeNode[]>([]);
-    let inProgressTree = $state<ProgressTreeNode[]>([]);
-    let doneTree = $state<ProgressTreeNode[]>([]);
+    let todoTree = $state<ProgressTreeNodeWithWbs[]>([]);
+    let inProgressTree = $state<ProgressTreeNodeWithWbs[]>([]);
+    let doneTree = $state<ProgressTreeNodeWithWbs[]>([]);
 
     let todoCount = $state<number>(0);
     let inProgressCount = $state<number>(0);
     let doneCount = $state<number>(0);
+
+    let priorityScoreById: Record<number, number> = {};
 
     function buildQuery(params: Record<string, string>): string {
         const sp = new URLSearchParams(params);
@@ -70,62 +81,87 @@
         return `/conport/progress${buildQuery({ limit: String(TASK_TREE_LIMIT) })}`;
     }
 
-    function extractPhaseNumber(description: string): number | null {
-        // Only treat entries like "Phase 1 — ..." as phases.
-        // (Avoid matching child tasks like "Phase 1: ...".)
-        const m = description.match(/\bphase\s*(\d+)\s*[—–-]/i);
+    function getEntityType(
+        entry: ProgressEntryWithWbs,
+    ): "project" | "phase" | "task" | "unknown" {
+        return entry.wbs_meta?.entity_type ?? "unknown";
+    }
+
+    function getTitle(entry: ProgressEntryWithWbs): string {
+        return entry.wbs_meta?.title ?? stripPriorityPrefix(entry.description);
+    }
+
+    function stripPriorityPrefix(description: string): string {
+        return description.replace(/^\s*\[p\d+\]\s*/i, "");
+    }
+
+    function extractPriorityNumber(entry: ProgressEntryWithWbs): number | null {
+        // Check WBS metadata first
+        if (entry.wbs_meta?.priority) {
+            const match = entry.wbs_meta.priority.match(/^P(\d+)$/);
+            if (match) return Number(match[1]);
+        }
+        // Fallback to description parsing
+        const m = entry.description.match(/^\s*\[p(\d+)\]/i);
         return m ? Number(m[1]) : null;
     }
 
-    function extractPriorityNumber(description: string): number | null {
-        const m = description.match(/^\s*\[p(\d+)\]/i);
-        return m ? Number(m[1]) : null;
-    }
-
-    function cleanSortTitle(description: string): string {
-        return description
-            .trim()
-            .replace(/^\s*\[p\d+\]\s*/i, "")
-            .toLowerCase();
+    function cleanSortTitle(entry: ProgressEntryWithWbs): string {
+        return getTitle(entry).toLowerCase();
     }
 
     function compareTreeNodes(
-        a: ProgressTreeNode,
-        b: ProgressTreeNode,
+        a: ProgressTreeNodeWithWbs,
+        b: ProgressTreeNodeWithWbs,
     ): number {
-        const aPhase = extractPhaseNumber(a.entry.description);
-        const bPhase = extractPhaseNumber(b.entry.description);
-        const aIsPhase = aPhase !== null;
-        const bIsPhase = bPhase !== null;
+        const aType = getEntityType(a.entry);
+        const bType = getEntityType(b.entry);
 
-        // 1) phases first
-        if (aIsPhase !== bIsPhase) return aIsPhase ? -1 : 1;
+        // 1) Sort by entity type: project < phase < task
+        const typeOrder = { project: 0, phase: 1, task: 2, unknown: 3 };
+        if (aType !== bType) {
+            return typeOrder[aType] - typeOrder[bType];
+        }
 
-        // 2) phase number (Phase 0 -> 1 -> 2 ...)
-        if (aIsPhase && bIsPhase && aPhase !== bPhase) return aPhase - bPhase;
+        // 2) Sort by order field if present
+        const aOrder = a.entry.wbs_meta?.order ?? null;
+        const bOrder = b.entry.wbs_meta?.order ?? null;
+        if (aOrder != null && bOrder != null && aOrder !== bOrder) {
+            return aOrder - bOrder;
+        }
 
-        // 3) priority tag ([P0] -> [P1] -> ...)
-        const aPri = extractPriorityNumber(a.entry.description) ?? 9999;
-        const bPri = extractPriorityNumber(b.entry.description) ?? 9999;
+        // 3) Priority (WBS or inherited)
+        const aPri =
+            priorityScoreById[a.entry.id] ??
+            extractPriorityNumber(a.entry) ??
+            9999;
+        const bPri =
+            priorityScoreById[b.entry.id] ??
+            extractPriorityNumber(b.entry) ??
+            9999;
         if (aPri !== bPri) return aPri - bPri;
 
-        // 4) title (stable-ish)
-        const at = cleanSortTitle(a.entry.description);
-        const bt = cleanSortTitle(b.entry.description);
+        // 4) Title
+        const at = cleanSortTitle(a.entry);
+        const bt = cleanSortTitle(b.entry);
         if (at < bt) return -1;
         if (at > bt) return 1;
 
-        // 5) deterministic tie-breaker
+        // 5) Deterministic tie-breaker
         return a.entry.id - b.entry.id;
     }
 
-    function isPlanRoot(entry: ConportProgressEntry): boolean {
+    function isPlanRoot(entry: ProgressEntryWithWbs): boolean {
+        if (entry.wbs_meta?.entity_type === "project") return true;
         const d = entry.description.trim().toLowerCase();
         return d.startsWith("[plan]") || d.startsWith("plan:");
     }
 
-    function planDisplayTitle(description: string): string {
-        const trimmed = description.trim();
+    function planDisplayTitle(entry: ProgressEntryWithWbs): string {
+        const wbsTitle = entry.wbs_meta?.title;
+        if (wbsTitle) return wbsTitle;
+
+        const trimmed = entry.description.trim();
         const lower = trimmed.toLowerCase();
 
         let title = trimmed;
@@ -134,8 +170,6 @@
         else if (lower.startsWith("plan:"))
             title = trimmed.slice("plan:".length).trim();
 
-        // Normalize verbose titles like:
-        // "Mindscape-AI project plan (derived from README + PRD v1.0.0)" -> "Mindscape-AI project plan"
         const lowerTitle = title.toLowerCase();
         const derivedIdx = lowerTitle.indexOf(" (derived from");
         if (derivedIdx >= 0) title = title.slice(0, derivedIdx).trim();
@@ -143,15 +177,25 @@
         return title;
     }
 
-    function buildTree(entries: ConportProgressEntry[]): ProgressTreeNode[] {
-        // Note: avoid `new Map()` to keep Svelte's static analysis happy.
-        const nodes: Record<number, ProgressTreeNode> = {};
+    function enrichEntriesWithWbs(
+        entries: ConportProgressEntry[],
+    ): ProgressEntryWithWbs[] {
+        return entries.map((e) => ({
+            ...e,
+            wbs_meta: wbsMetaMap.get(e.id),
+        }));
+    }
+
+    function buildTree(
+        entries: ProgressEntryWithWbs[],
+    ): ProgressTreeNodeWithWbs[] {
+        const nodes: Record<number, ProgressTreeNodeWithWbs> = {};
 
         for (const e of entries) {
             nodes[e.id] = { entry: e, children: [] };
         }
 
-        const roots: ProgressTreeNode[] = [];
+        const roots: ProgressTreeNodeWithWbs[] = [];
         for (const node of Object.values(nodes)) {
             const parentId = node.entry.parent_id;
             const parent = parentId != null ? nodes[parentId] : undefined;
@@ -159,7 +203,19 @@
             else roots.push(node);
         }
 
-        const sortRecursive = (arr: ProgressTreeNode[]) => {
+        priorityScoreById = {};
+        const computePriority = (node: ProgressTreeNodeWithWbs): number => {
+            let best = extractPriorityNumber(node.entry) ?? 9999;
+            for (const c of node.children) {
+                const childBest = computePriority(c);
+                if (childBest < best) best = childBest;
+            }
+            priorityScoreById[node.entry.id] = best;
+            return best;
+        };
+        for (const r of roots) computePriority(r);
+
+        const sortRecursive = (arr: ProgressTreeNodeWithWbs[]) => {
             arr.sort(compareTreeNodes);
             for (const n of arr) sortRecursive(n.children);
         };
@@ -169,20 +225,39 @@
     }
 
     function mergeProgressEntries(
-        base: ConportProgressEntry[],
+        base: ProgressEntryWithWbs[],
         extra: ConportProgressEntry[],
-    ): ConportProgressEntry[] {
-        const byId: Record<number, ConportProgressEntry> = {};
+    ): ProgressEntryWithWbs[] {
+        const byId: Record<number, ProgressEntryWithWbs> = {};
         for (const e of base) byId[e.id] = e;
-        for (const e of extra) byId[e.id] = e;
+        for (const e of extra) {
+            byId[e.id] = {
+                ...e,
+                wbs_meta: wbsMetaMap.get(e.id),
+            };
+        }
         return Object.values(byId);
     }
 
     function extractPhaseIdFromEntries(
-        entries: ConportProgressEntry[],
+        entries: ProgressEntryWithWbs[],
         phaseNumber: number,
     ): number | null {
-        const re = new RegExp(`\\bphase\\s*${phaseNumber}\\s*[—–-]`, "i");
+        // Check WBS metadata first
+        for (const e of entries) {
+            if (e.wbs_meta?.entity_type === "phase") {
+                const phaseMatch = e.wbs_meta.title.match(/phase\s*(\d+)/i);
+                if (phaseMatch && Number(phaseMatch[1]) === phaseNumber) {
+                    return e.id;
+                }
+            }
+        }
+
+        // Fallback to description parsing
+        const re = new RegExp(
+            `\\b(?:phase\\s*${phaseNumber}\\s*[—–-_]|phase${phaseNumber}\\s*[—–-_])`,
+            "i",
+        );
         for (const e of entries) {
             if (re.test(e.description)) return e.id;
         }
@@ -203,11 +278,11 @@
         }
     }
 
-    function partitionTreeByLane(nodes: ProgressTreeNode[]): {
-        lanes: Record<LaneStatus, ProgressTreeNode[]>;
+    function partitionTreeByLane(nodes: ProgressTreeNodeWithWbs[]): {
+        lanes: Record<LaneStatus, ProgressTreeNodeWithWbs[]>;
         counts: Record<LaneStatus, number>;
     } {
-        const lanes: Record<LaneStatus, ProgressTreeNode[]> = {
+        const lanes: Record<LaneStatus, ProgressTreeNodeWithWbs[]> = {
             IN_PROGRESS: [],
             TODO: [],
             DONE: [],
@@ -219,13 +294,13 @@
         };
 
         const cloneIntoLane = (
-            node: ProgressTreeNode,
+            node: ProgressTreeNodeWithWbs,
             lane: LaneStatus,
-        ): ProgressTreeNode => {
+        ): ProgressTreeNodeWithWbs => {
             counts[lane] += 1;
             return {
                 entry: node.entry,
-                children: node.children.map((c: ProgressTreeNode) =>
+                children: node.children.map((c: ProgressTreeNodeWithWbs) =>
                     cloneIntoLane(c, lane),
                 ),
             };
@@ -247,6 +322,21 @@
             const app_id = $page.url.searchParams.get("app_id");
             const db = $page.url.searchParams.get("db");
 
+            // Fetch WBS metadata first
+            const wbsResp = await conportCustomDataList(fetch, {
+                category: "wbs_meta",
+                db,
+            });
+
+            wbsMetaMap.clear();
+            for (const item of wbsResp.custom_data) {
+                const match = item.key.match(/^progress:(\d+)$/);
+                if (match) {
+                    const progressId = Number(match[1]);
+                    wbsMetaMap.set(progressId, item.value as WbsMeta);
+                }
+            }
+
             const [dash, list] = await Promise.all([
                 conportDashboard(fetch, { app_id, db }),
                 conportProgressList(fetch, {
@@ -259,15 +349,11 @@
             ]);
 
             data = dash;
-            treeEntries = (list as ConportProgressListResponse)
-                .progress_entries;
+            treeEntries = enrichEntriesWithWbs(
+                (list as ConportProgressListResponse).progress_entries,
+            );
 
-            // Robustness: Phase nodes and their notes can be older than the latest TASK_TREE_LIMIT
-            // rows and therefore omitted.
-            //
-            // Backfill any root-level rows that start with "Phase" or "[P" (covers both:
-            // - "Phase N — ..." / "Phase N: ..."
-            // - "[P1] Phase N — ..." / "[P1] Phase N: ..."
+            // Backfill phase entries
             const [phaseBackfill, phaseBackfillPrioritized] = await Promise.all(
                 [
                     conportProgressList(fetch, {
@@ -299,15 +385,18 @@
                     .progress_entries,
             );
 
-            // Ensure each Phase node has its notes attached as children so TaskExplorerTree can
-            // render the Notes subpanel.
-            const phaseNumbers = Array.from(
-                new Set(
-                    treeEntries
-                        .map((e) => extractPhaseNumber(e.description))
-                        .filter((n): n is number => n != null),
-                ),
-            ).sort((a, b) => a - b);
+            // Get unique phase numbers
+            const phaseNumbers: number[] = [];
+            for (const e of treeEntries) {
+                if (e.wbs_meta?.entity_type === "phase") {
+                    const match = e.wbs_meta.title.match(/phase\s*(\d+)/i);
+                    if (match) {
+                        const num = Number(match[1]);
+                        if (!phaseNumbers.includes(num)) phaseNumbers.push(num);
+                    }
+                }
+            }
+            phaseNumbers.sort((a, b) => a - b);
 
             for (const phaseNumber of phaseNumbers) {
                 const phaseId = extractPhaseIdFromEntries(
@@ -325,7 +414,6 @@
                             app_id,
                             db,
                         }),
-                        // Notes are often stored as root-level rows (parent_id = null)
                         conportProgressList(fetch, {
                             parent_id: null,
                             description_prefix: `Phase ${phaseNumber}:`,
@@ -333,7 +421,6 @@
                             app_id,
                             db,
                         }),
-                        // ...but support DBs where notes were already attached under the phase
                         conportProgressList(fetch, {
                             parent_id: phaseId,
                             description_prefix: `Phase ${phaseNumber}:`,
@@ -363,9 +450,13 @@
                 );
                 const attachedNotes = rootNotes.map((n) => {
                     if (n.parent_id == null && re.test(n.description)) {
-                        return { ...n, parent_id: phaseId };
+                        return {
+                            ...n,
+                            parent_id: phaseId,
+                            wbs_meta: wbsMetaMap.get(n.id),
+                        };
                     }
-                    return n;
+                    return { ...n, wbs_meta: wbsMetaMap.get(n.id) };
                 });
 
                 treeEntries = mergeProgressEntries(treeEntries, attachedNotes);
@@ -373,14 +464,27 @@
 
             tree = buildTree(treeEntries);
 
-            const planRoot = tree.find((n) => isPlanRoot(n.entry)) ?? null;
-            planTitle = planRoot
-                ? planDisplayTitle(planRoot.entry.description)
-                : null;
+            let planRoot = tree.find((n) => isPlanRoot(n.entry)) ?? null;
+            if (
+                planRoot == null &&
+                tree.length === 1 &&
+                tree[0].children.length > 0
+            ) {
+                planRoot = tree[0];
+            } else if (planRoot == null && tree.length > 1) {
+                let best: ProgressTreeNodeWithWbs | null = null;
+                for (const n of tree) {
+                    if (
+                        best == null ||
+                        n.children.length > best.children.length
+                    )
+                        best = n;
+                }
+                if (best != null && best.children.length >= 2) planRoot = best;
+            }
 
-            // Render plan children in the status panels (exclude the plan root itself).
-            // But ALSO include any other root-level nodes (not just phases), because many
-            // parent tasks (e.g. T030) are not direct children of the [plan] node.
+            planTitle = planRoot ? planDisplayTitle(planRoot.entry) : null;
+
             const planChildren = planRoot ? planRoot.children : [];
             const planChildIds = new Set(planChildren.map((n) => n.entry.id));
 
@@ -418,15 +522,15 @@
     onMount(() => {
         void refresh();
 
-        // Note: events stream doesn't scope by app_id yet; we keep this connection global.
-        const conn = connectEventsStream(
-            {
-                onHeartbeat: () => maybeAutoRefresh(),
-            },
-            { heartbeat_seconds: 15 },
-        );
+        // Auto-refresh disabled
+        // const conn = connectEventsStream(
+        //     {
+        //         onHeartbeat: () => maybeAutoRefresh(),
+        //     },
+        //     { heartbeat_seconds: 15 },
+        // );
 
-        return () => conn.close();
+        // return () => conn.close();
     });
 </script>
 
@@ -451,7 +555,7 @@
                             {planTitle ?? "Project plan"} — Explorer
                         </h2>
                         <div class="mt-2 text-xs text-gray-300/90">
-                            Explorer-style outline (collapsible by status).
+                            WBS v1.0 • {wbsMetaMap.size} records with metadata
                         </div>
                     </div>
 

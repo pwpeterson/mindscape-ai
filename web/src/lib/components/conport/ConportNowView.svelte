@@ -6,9 +6,16 @@
         ConportNowResponse,
         ConportProgressEntry,
         ConportProgressListResponse,
+        ConportCustomDataListResponse,
     } from "$lib/api/conport";
-    import { conportNow, conportProgressList } from "$lib/api/conport";
+    import {
+        conportNow,
+        conportProgressList,
+        conportCustomDataList,
+    } from "$lib/api/conport";
     import { connectEventsStream } from "$lib/api/events";
+
+    import type { ProgressEntryWithWbs, WbsMeta } from "$lib/types/progress";
 
     const PANEL_LIMIT = 50;
     const PREVIEW_LIMIT = 12;
@@ -17,15 +24,16 @@
     let error = $state<string | null>(null);
     let data = $state<ConportNowResponse | null>(null);
 
-    let todoEntries = $state<ConportProgressEntry[]>([]);
-    let inProgressEntries = $state<ConportProgressEntry[]>([]);
-    let doneEntries = $state<ConportProgressEntry[]>([]);
+    let todoEntries = $state<ProgressEntryWithWbs[]>([]);
+    let inProgressEntries = $state<ProgressEntryWithWbs[]>([]);
+    let doneEntries = $state<ProgressEntryWithWbs[]>([]);
+
+    let wbsMetaMap = $state<Map<number, WbsMeta>>(new Map());
 
     const AUTO_REFRESH_MIN_INTERVAL_MS = 600_000; // 10 minutes
     let lastAutoRefreshAtMs = $state<number>(0);
 
     function maybeAutoRefresh() {
-        // Avoid piling up fetches or hammering the API; heartbeats are frequent by design.
         if (loading) return;
         const now = Date.now();
         if (now - lastAutoRefreshAtMs < AUTO_REFRESH_MIN_INTERVAL_MS) return;
@@ -58,9 +66,25 @@
         return `/conport/progress${buildQuery({ limit: String(PANEL_LIMIT), status: status ?? "" })}`;
     }
 
+    function getTitle(entry: ProgressEntryWithWbs): string {
+        return entry.wbs_meta?.title ?? stripPriorityPrefix(entry.description);
+    }
+
+    function stripPriorityPrefix(description: string): string {
+        return description.replace(/^\s*\[p\d+\]\s*/i, "");
+    }
+
     function displayDescription(description: string): string {
-        // Hide the [P#] prefix in the UI, but keep it in the stored ConPort description.
         return description.trim().replace(/^\[p\d+\]\s*/i, "");
+    }
+
+    function enrichEntriesWithWbs(
+        entries: ConportProgressEntry[],
+    ): ProgressEntryWithWbs[] {
+        return entries.map((e) => ({
+            ...e,
+            wbs_meta: wbsMetaMap.get(e.id),
+        }));
     }
 
     async function refresh() {
@@ -71,26 +95,38 @@
             const app_id = $page.url.searchParams.get("app_id");
             const db = $page.url.searchParams.get("db");
 
+            // Fetch WBS metadata first
+            const wbsResp = await conportCustomDataList(fetch, {
+                category: "wbs_meta",
+                db,
+            });
+
+            wbsMetaMap.clear();
+            for (const item of wbsResp.custom_data) {
+                const match = item.key.match(/^progress:(\d+)$/);
+                if (match) {
+                    const progressId = Number(match[1]);
+                    wbsMetaMap.set(progressId, item.value as WbsMeta);
+                }
+            }
+
             const [nowResp, todoResp, inProgressResp, doneResp] =
                 await Promise.all([
                     conportNow(fetch, { app_id, db }),
                     conportProgressList(fetch, {
                         status: "TODO",
-                        parent_id: null,
                         limit: PANEL_LIMIT,
                         app_id,
                         db,
                     }),
                     conportProgressList(fetch, {
                         status: "IN_PROGRESS",
-                        parent_id: null,
                         limit: PANEL_LIMIT,
                         app_id,
                         db,
                     }),
                     conportProgressList(fetch, {
                         status: "DONE",
-                        parent_id: null,
                         limit: PANEL_LIMIT,
                         app_id,
                         db,
@@ -98,12 +134,16 @@
                 ]);
 
             data = nowResp;
-            todoEntries = (todoResp as ConportProgressListResponse)
-                .progress_entries;
-            inProgressEntries = (inProgressResp as ConportProgressListResponse)
-                .progress_entries;
-            doneEntries = (doneResp as ConportProgressListResponse)
-                .progress_entries;
+            todoEntries = enrichEntriesWithWbs(
+                (todoResp as ConportProgressListResponse).progress_entries,
+            );
+            inProgressEntries = enrichEntriesWithWbs(
+                (inProgressResp as ConportProgressListResponse)
+                    .progress_entries,
+            );
+            doneEntries = enrichEntriesWithWbs(
+                (doneResp as ConportProgressListResponse).progress_entries,
+            );
         } catch (err) {
             error = err instanceof Error ? err.message : String(err);
         } finally {
@@ -114,21 +154,25 @@
     onMount(() => {
         void refresh();
 
-        // Browser-only: subscribe to SSE and refresh on heartbeats.
-        // Note: events stream doesn't scope by app_id yet; we keep this connection global.
-        const conn = connectEventsStream(
-            {
-                onHeartbeat: () => maybeAutoRefresh(),
-            },
-            { heartbeat_seconds: 15 },
-        );
+        // Auto-refresh disabled
+        // const conn = connectEventsStream(
+        //     {
+        //         onHeartbeat: () => maybeAutoRefresh(),
+        //     },
+        //     { heartbeat_seconds: 15 },
+        // );
 
-        return () => conn.close();
+        // return () => conn.close();
     });
 </script>
 
 <main class="page-container">
-    <div class="mb-4 flex items-center justify-end gap-3">
+    <div class="mb-4 flex items-center justify-between gap-3">
+        <div class="text-xs text-gray-500">
+            {#if wbsMetaMap.size > 0}
+                WBS v1.0 • {wbsMetaMap.size} records with metadata
+            {/if}
+        </div>
         <button
             onclick={() => refresh()}
             disabled={loading}
@@ -239,8 +283,13 @@
                                             href={progressItemHref(e.id)}
                                             class="hover:underline"
                                         >
-                                            {displayDescription(e.description)}
+                                            {getTitle(e)}
                                         </a>
+                                        {#if e.wbs_meta?.priority}
+                                            <span class="ml-1 opacity-60">
+                                                [{e.wbs_meta.priority}]
+                                            </span>
+                                        {/if}
                                     </li>
                                 {/each}
                             </ul>
@@ -289,8 +338,13 @@
                                             href={progressItemHref(e.id)}
                                             class="hover:underline"
                                         >
-                                            {displayDescription(e.description)}
+                                            {getTitle(e)}
                                         </a>
+                                        {#if e.wbs_meta?.priority}
+                                            <span class="ml-1 opacity-60">
+                                                [{e.wbs_meta.priority}]
+                                            </span>
+                                        {/if}
                                     </li>
                                 {/each}
                             </ul>
@@ -339,8 +393,13 @@
                                             href={progressItemHref(e.id)}
                                             class="hover:underline"
                                         >
-                                            {displayDescription(e.description)}
+                                            {getTitle(e)}
                                         </a>
+                                        {#if e.wbs_meta?.priority}
+                                            <span class="ml-1 opacity-60">
+                                                [{e.wbs_meta.priority}]
+                                            </span>
+                                        {/if}
                                     </li>
                                 {/each}
                             </ul>
