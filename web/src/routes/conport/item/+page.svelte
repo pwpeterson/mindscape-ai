@@ -31,8 +31,9 @@
 		loading = true;
 
 		try {
+			const app_id = $page.url.searchParams.get("app_id");
 			const db = $page.url.searchParams.get("db");
-			data = await conportItem(fetch, { type, id, db });
+			data = await conportItem(fetch, { type, id, app_id, db });
 		} catch (err) {
 			error = err instanceof Error ? err.message : String(err);
 		} finally {

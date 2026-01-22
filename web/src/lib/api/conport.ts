@@ -129,20 +129,27 @@ async function getJson<T>(fetchFn: FetchLike, url: string): Promise<T> {
 function buildUrl(path: string, params: Record<string, string | null | undefined> = {}): string {
 	const base = apiBase();
 
+	console.log('[ConPort API Client] buildUrl called:', { path, params, base });
+
 	if (base) {
 		const url = new URL(`${base}${path}`);
 		for (const [k, v] of Object.entries(params)) {
 			if (v != null && v !== '') url.searchParams.set(k, v);
 		}
-		return url.toString();
+		const result = url.toString();
+		console.log('[ConPort API Client] buildUrl result (with base):', result);
+		return result;
 	}
 
 	// Same-origin relative path.
 	const url = new URL(path, 'http://local');
 	for (const [k, v] of Object.entries(params)) {
+		console.log(`[ConPort API Client] Adding param: ${k}=${v}, condition: v != null (${v != null}) && v !== '' (${v !== ''})`);
 		if (v != null && v !== '') url.searchParams.set(k, v);
 	}
-	return url.pathname + url.search;
+	const result = url.pathname + url.search;
+	console.log('[ConPort API Client] buildUrl result (same-origin):', result);
+	return result;
 }
 
 export async function conportNow(

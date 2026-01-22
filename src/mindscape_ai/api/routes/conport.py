@@ -17,6 +17,7 @@ from typing import Any, Literal
 
 import aiosqlite
 from fastapi import APIRouter, Body, HTTPException, Query
+from loguru import logger
 
 from mindscape_ai.apps.registry import (
     AppRegistryError,
@@ -202,27 +203,37 @@ def _resolve_conport_db_from_app_id(app_id: str) -> Path:
     Additionally, for local/dev UX, we allow resolving this Mindscape-AI repo as an
     implicit app when `app_id` matches its `[project].name`.
     """
+    logger.info(f"[ConPort API] Resolving DB for app_id={app_id}")
+    
     self_info = _self_app_db()
     if self_info is not None and app_id == self_info[0]:
+        logger.info(f"[ConPort API] Matched self app: {self_info[0]} -> {self_info[1]}")
         return self_info[1]
 
     # Preferred: Supabase registry
     try:
-        return resolve_conport_db_path_from_supabase(app_id)
-    except SupabaseUnavailableError:
+        db_path = resolve_conport_db_path_from_supabase(app_id)
+        logger.info(f"[ConPort API] Resolved via Supabase: {db_path}")
+        return db_path
+    except SupabaseUnavailableError as exc:
+        logger.warning(f"[ConPort API] Supabase unavailable, falling back to env scanning: {exc}")
         # Fall back to env scanning
         pass
     except AppStoreError as exc:
         # Supabase is configured but data is invalid/missing.
+        logger.error(f"[ConPort API] Supabase error for app_id={app_id}: {exc}")
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     # Fallback: legacy env scanning
+    logger.info(f"[ConPort API] Attempting legacy env scanning for app_id={app_id}")
     try:
         mapping = _apps_by_id()
     except AppRegistryError as exc:
+        logger.error(f"[ConPort API] App registry error: {exc}")
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     if not mapping:
+        logger.error("[ConPort API] App registry not configured")
         raise HTTPException(
             status_code=400,
             detail=(
@@ -233,12 +244,17 @@ def _resolve_conport_db_from_app_id(app_id: str) -> Path:
         )
 
     if app_id not in mapping:
+        logger.error(f"[ConPort API] app_id={app_id} not found in mapping. Available: {list(mapping.keys())}")
         raise HTTPException(status_code=404, detail=f"Unknown app_id: {app_id}")
 
     resolved = mapping[app_id].resolve()
+    logger.info(f"[ConPort API] Resolved via env mapping: {resolved}")
+    
     if resolved.suffix.lower() != ".db":
+        logger.error(f"[ConPort API] Invalid DB suffix: {resolved}")
         raise HTTPException(status_code=400, detail="Resolved ConPort DB must end with '.db'.")
     if not resolved.exists() or not resolved.is_file():
+        logger.error(f"[ConPort API] DB not found: {resolved}")
         raise HTTPException(status_code=404, detail="Resolved ConPort DB not found.")
     return resolved
 
@@ -252,22 +268,28 @@ async def _open_aiosqlite(
     1) app_id (multi-app mode) -> DB via registry (MINDSCAPE_APP_ROOTS)
     2) db query param (legacy/workbench) -> DB via resolve_conport_db_path()
     """
+    logger.debug(f"[ConPort API] _open_aiosqlite called with app_id={app_id}, db_path={db_path}, read_only={read_only}")
+    
     _validate_app_id_query_param(app_id)
     if app_id is not None:
         resolved = _resolve_conport_db_from_app_id(app_id)
         display = f"app:{app_id}"
+        logger.info(f"[ConPort API] Resolved app_id={app_id} to {resolved}")
     else:
         _validate_db_query_param(db_path)
         try:
             # Make DB resolution CWD-independent by anchoring the workspace-root search
-            # to this module’s location (inside the repo).
+            # to this module's location (inside the repo).
             resolved = resolve_conport_db_path(db_path, start=Path(__file__))
+            logger.info(f"[ConPort API] Resolved db_path={db_path} to {resolved}")
         except ConPortDbPathError as exc:
+            logger.error(f"[ConPort API] ConPort DB path resolution error: {exc}")
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         display = str(resolved)
 
     mode = "ro" if read_only else "rw"
     uri = f"file:{resolved.as_posix()}?mode={mode}"
+    logger.debug(f"[ConPort API] Opening SQLite at {uri}")
     conn = await aiosqlite.connect(uri, uri=True)
 
     await conn.execute("PRAGMA foreign_keys = ON")

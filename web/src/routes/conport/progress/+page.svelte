@@ -4,19 +4,18 @@
 
     import TaskExplorerTree from "$lib/components/TaskExplorerTree.svelte";
     import type {
-        ProgressTreeNodeWithWbs,
         ProgressEntryWithWbs,
+        ProgressTreeNodeWithWbs,
         WbsMeta,
     } from "$lib/types/progress";
 
     import type {
         ConportProgressEntry,
         ConportProgressListResponse,
-        ConportCustomDataListResponse,
     } from "$lib/api/conport";
     import {
-        conportProgressList,
         conportCustomDataList,
+        conportProgressList,
     } from "$lib/api/conport";
 
     const BOARD_LIMIT = 500;
@@ -47,11 +46,25 @@
         return n;
     }
 
-    function withDb(url: string): string {
+    function buildQuery(params: Record<string, string>): string {
+        const sp = new URLSearchParams(params);
+
+        const app_id = $page.url.searchParams.get("app_id");
         const db = $page.url.searchParams.get("db");
-        if (!db) return url;
-        const sp = new URLSearchParams({ db });
-        return url.includes("?") ? `${url}&${sp}` : `${url}?${sp}`;
+
+        if (app_id) {
+            sp.set("app_id", app_id);
+            sp.delete("db");
+        } else if (db) {
+            sp.set("db", db);
+        }
+
+        const qs = sp.toString();
+        return qs ? `?${qs}` : "";
+    }
+
+    function withDb(url: string): string {
+        return url + buildQuery({});
     }
 
     function getEntityType(
@@ -68,7 +81,9 @@
         return description.replace(/^\s*\[p\d+\]\s*/i, "");
     }
 
-    function entityIcon(type: "project" | "phase" | "task" | "unknown"): string {
+    function entityIcon(
+        type: "project" | "phase" | "task" | "unknown",
+    ): string {
         switch (type) {
             case "project":
                 return "📦";
@@ -171,7 +186,7 @@
     }
 
     function progressItemHref(id: number): string {
-        return withDb(`/conport/item?type=progress&id=${id}`);
+        return `/conport/item${buildQuery({ type: "progress", id: String(id) })}`;
     }
 
     function compareTreeNodes(
@@ -253,12 +268,22 @@
         error = null;
 
         try {
+            const app_id = $page.url.searchParams.get("app_id");
             const db = $page.url.searchParams.get("db");
             const parsedParentId = parseParentId(parent_id);
+
+            console.log("[Progress Page] refresh() called with filters:", {
+                status: status.trim() || null,
+                parent_id: parsedParentId,
+                limit,
+                app_id,
+                db,
+            });
 
             // Fetch WBS metadata first
             const wbsResp = await conportCustomDataList(fetch, {
                 category: "wbs_meta",
+                app_id,
                 db,
             });
 
@@ -279,24 +304,28 @@
                         status: status.trim() || null,
                         parent_id: parsedParentId,
                         limit,
+                        app_id,
                         db,
                     }),
                     conportProgressList(fetch, {
                         status: "TODO",
                         parent_id: parsedParentId,
                         limit: BOARD_LIMIT,
+                        app_id,
                         db,
                     }),
                     conportProgressList(fetch, {
                         status: "IN_PROGRESS",
                         parent_id: parsedParentId,
                         limit: BOARD_LIMIT,
+                        app_id,
                         db,
                     }),
                     conportProgressList(fetch, {
                         status: "DONE",
                         parent_id: parsedParentId,
                         limit: BOARD_LIMIT,
+                        app_id,
                         db,
                     }),
                 ]);
@@ -460,11 +489,7 @@
                 />
             </label>
 
-            <button
-                type="submit"
-                disabled={loading}
-                style="padding: 8px 12px; border: 1px solid #ccc; border-radius: 8px; background: white; cursor: pointer;"
-            >
+            <button type="submit" disabled={loading} class="btn btn-primary">
                 {loading ? "Loading…" : "Apply"}
             </button>
         </div>
@@ -514,124 +539,123 @@
             {/if}
         </details>
 
-        <section style="margin-bottom: 18px;">
-            <div
-                style="display: flex; justify-content: space-between; align-items: end; gap: 12px;"
-            >
-                <div>
-                    <h2 style="margin: 0; font-size: 16px;">Project board</h2>
-                    <p style="margin: 6px 0 0; font-size: 12px; opacity: 0.7;">
-                        Grouped by status {#if parent_id.trim()}for parent_id={parent_id.trim()}{:else}(all
-                            tasks){/if}
-                    </p>
+        {#if !status.trim()}
+            <section style="margin-bottom: 18px;">
+                <div
+                    style="display: flex; justify-content: space-between; align-items: end; gap: 12px;"
+                >
+                    <div>
+                        <h2 style="margin: 0; font-size: 16px;">
+                            Project board
+                        </h2>
+                        <p
+                            style="margin: 6px 0 0; font-size: 12px; opacity: 0.7;"
+                        >
+                            Grouped by status {#if parent_id.trim()}for
+                                parent_id={parent_id.trim()}{:else}(all tasks){/if}
+                        </p>
+                    </div>
+                    <div style="font-size: 12px; opacity: 0.75;">
+                        TODO: {todoEntries.length} • IN_PROGRESS: {inProgressEntries.length}
+                        • DONE: {doneEntries.length}
+                    </div>
                 </div>
-                <div style="font-size: 12px; opacity: 0.75;">
-                    TODO: {todoEntries.length} • IN_PROGRESS: {inProgressEntries.length}
-                    • DONE: {doneEntries.length}
-                </div>
-            </div>
 
-            <div
-                style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin-top: 12px;"
-            >
-                {#each [
-                    {
-                        label: "TODO",
-                        entries: todoEntries,
-                        color: "#0ea5e9",
-                    },
-                    {
-                        label: "IN_PROGRESS",
-                        entries: inProgressEntries,
-                        color: "#f59e0b",
-                    },
-                    {
-                        label: "DONE",
-                        entries: doneEntries,
-                        color: "#10b981",
-                    },
-                ] as column}
-                    <div
-                        style="border: 1px solid rgba(255,255,255,0.12); border-radius: 10px; padding: 10px; background: rgba(0,0,0,0.25);"
-                    >
+                <div
+                    style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin-top: 12px;"
+                >
+                    {#each [{ label: "TODO", entries: todoEntries, color: "#0ea5e9" }, { label: "IN_PROGRESS", entries: inProgressEntries, color: "#f59e0b" }, { label: "DONE", entries: doneEntries, color: "#10b981" }] as column}
                         <div
-                            style="display: flex; align-items: center; justify-content: space-between; gap: 8px;"
+                            style="border: 1px solid rgba(255,255,255,0.12); border-radius: 10px; padding: 10px; background: rgba(0,0,0,0.25);"
                         >
                             <div
-                                style="display: flex; align-items: center; gap: 8px; font-weight: 700;"
+                                style="display: flex; align-items: center; justify-content: space-between; gap: 8px;"
                             >
-                                <span
-                                    style={`display: inline-block; width: 8px; height: 8px; border-radius: 999px; background: ${column.color};`}
-                                ></span>
-                                {column.label}
+                                <div
+                                    style="display: flex; align-items: center; gap: 8px; font-weight: 700;"
+                                >
+                                    <span
+                                        style={`display: inline-block; width: 8px; height: 8px; border-radius: 999px; background: ${column.color};`}
+                                    ></span>
+                                    {column.label}
+                                </div>
+                                <span style="font-size: 12px; opacity: 0.75;"
+                                    >{column.entries.length}</span
+                                >
                             </div>
-                            <span style="font-size: 12px; opacity: 0.75;"
-                                >{column.entries.length}</span
-                            >
-                        </div>
-                        {#if column.entries.length === 0}
-                            <p
-                                style="margin: 10px 0 0; font-size: 12px; opacity: 0.7;"
-                            >
-                                No {column.label.toLowerCase()} tasks.
-                            </p>
-                        {:else}
-                            <ul
-                                style="margin: 10px 0 0; padding-left: 18px; display: grid; gap: 6px; max-height: 520px; overflow: auto;"
-                            >
-                                {#each column.entries as e (e.id)}
-                                    {@const entityType = getEntityType(e)}
-                                    {@const title = getTitle(e)}
-                                    <li
-                                        style="display: flex; gap: 8px; align-items: baseline;"
-                                    >
-                                        <span
-                                            style="flex: 0 0 auto; margin-top: 2px;"
-                                            title={entityType}
+                            {#if column.entries.length === 0}
+                                <p
+                                    style="margin: 10px 0 0; font-size: 12px; opacity: 0.7;"
+                                >
+                                    No {column.label.toLowerCase()} tasks.
+                                </p>
+                            {:else}
+                                <ul
+                                    style="margin: 10px 0 0; padding-left: 18px; display: grid; gap: 6px; max-height: 520px; overflow: auto;"
+                                >
+                                    {#each column.entries as e (e.id)}
+                                        {@const entityType = getEntityType(e)}
+                                        {@const title = getTitle(e)}
+                                        <li
+                                            style="display: flex; gap: 8px; align-items: baseline;"
                                         >
-                                            {#if entityType === "phase"}
-                                                {phaseMarker(e.status)}
-                                            {:else}
-                                                {entityIcon(entityType)}
-                                            {/if}
-                                        </span>
-                                        <div style="min-w-0; flex: 1;">
-                                            <a
-                                                href={progressItemHref(e.id)}
-                                                style="text-decoration: none;"
-                                                title={`id=${e.id}`}
+                                            <span
+                                                style="flex: 0 0 auto; margin-top: 2px;"
+                                                title={entityType}
                                             >
-                                                {title}
-                                            </a>
-                                            {#if e.wbs_meta?.priority}
-                                                <span
-                                                    class="ml-1 text-xs opacity-60"
+                                                {#if entityType === "phase"}
+                                                    {phaseMarker(e.status)}
+                                                {:else}
+                                                    {entityIcon(entityType)}
+                                                {/if}
+                                            </span>
+                                            <div style="min-w-0; flex: 1;">
+                                                <a
+                                                    href={progressItemHref(
+                                                        e.id,
+                                                    )}
+                                                    style="text-decoration: none;"
+                                                    title={`id=${e.id}`}
                                                 >
-                                                    [{e.wbs_meta.priority}]
-                                                </span>
-                                            {/if}
-                                            {#if e.wbs_meta?.tags && e.wbs_meta.tags.length > 0}
-                                                <div
-                                                    class="mt-1 flex flex-wrap gap-1"
-                                                >
-                                                    {#each e.wbs_meta.tags.slice(0, 3) as tag}
-                                                        <span
-                                                            class="rounded bg-gray-700 px-1 py-0.5 text-xs"
-                                                        >
-                                                            {tag}
-                                                        </span>
-                                                    {/each}
-                                                </div>
-                                            {/if}
-                                        </div>
-                                    </li>
-                                {/each}
-                            </ul>
-                        {/if}
-                    </div>
-                {/each}
+                                                    {title}
+                                                </a>
+                                                {#if e.wbs_meta?.priority}
+                                                    <span
+                                                        class="ml-1 text-xs opacity-60"
+                                                    >
+                                                        [{e.wbs_meta.priority}]
+                                                    </span>
+                                                {/if}
+                                                {#if e.wbs_meta?.tags && e.wbs_meta.tags.length > 0}
+                                                    <div
+                                                        class="mt-1 flex flex-wrap gap-1"
+                                                    >
+                                                        {#each e.wbs_meta.tags.slice(0, 3) as tag}
+                                                            <span
+                                                                class="rounded bg-gray-700 px-1 py-0.5 text-xs"
+                                                            >
+                                                                {tag}
+                                                            </span>
+                                                        {/each}
+                                                    </div>
+                                                {/if}
+                                            </div>
+                                        </li>
+                                    {/each}
+                                </ul>
+                            {/if}
+                        </div>
+                    {/each}
+                </div>
+            </section>
+        {:else}
+            <div
+                style="margin-bottom: 18px; padding: 12px; border: 1px solid rgba(255,255,255,0.12); border-radius: 10px; background: rgba(0,0,0,0.15); font-size: 12px; opacity: 0.7;"
+            >
+                Project board hidden when status filter is active. Clear filter
+                to see all status columns.
             </div>
-        </section>
+        {/if}
 
         {#if entries.length === 0}
             <p style="opacity: 0.7;">No progress entries found.</p>

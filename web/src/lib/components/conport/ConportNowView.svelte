@@ -6,14 +6,12 @@
         ConportNowResponse,
         ConportProgressEntry,
         ConportProgressListResponse,
-        ConportCustomDataListResponse,
     } from "$lib/api/conport";
     import {
+        conportCustomDataList,
         conportNow,
         conportProgressList,
-        conportCustomDataList,
     } from "$lib/api/conport";
-    import { connectEventsStream } from "$lib/api/events";
 
     import type { ProgressEntryWithWbs, WbsMeta } from "$lib/types/progress";
 
@@ -98,6 +96,7 @@
             // Fetch WBS metadata first
             const wbsResp = await conportCustomDataList(fetch, {
                 category: "wbs_meta",
+                app_id,
                 db,
             });
 

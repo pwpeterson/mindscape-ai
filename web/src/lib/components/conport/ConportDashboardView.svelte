@@ -4,8 +4,8 @@
 
     import TaskExplorerTree from "$lib/components/TaskExplorerTree.svelte";
     import type {
-        ProgressTreeNodeWithWbs,
         ProgressEntryWithWbs,
+        ProgressTreeNodeWithWbs,
         WbsMeta,
     } from "$lib/types/progress";
 
@@ -13,14 +13,12 @@
         ConportDashboardResponse,
         ConportProgressEntry,
         ConportProgressListResponse,
-        ConportCustomDataListResponse,
     } from "$lib/api/conport";
     import {
+        conportCustomDataList,
         conportDashboard,
         conportProgressList,
-        conportCustomDataList,
     } from "$lib/api/conport";
-    import { connectEventsStream } from "$lib/api/events";
 
     const TASK_TREE_LIMIT = 500;
 
@@ -325,6 +323,7 @@
             // Fetch WBS metadata first
             const wbsResp = await conportCustomDataList(fetch, {
                 category: "wbs_meta",
+                app_id,
                 db,
             });
 
