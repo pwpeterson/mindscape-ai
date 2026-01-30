@@ -256,11 +256,11 @@ python -m mindscape_ai.mcp_server
 ```
 
 **Tools exposed:**
-- `conport.now`
-- `conport.search`
-- `mem0.search`
-- `prompts.files`
-- `tokens.breakdown`
+- `conport_now`
+- `conport_search`
+- `mem0_search`
+- `prompts_files`
+- `tokens_breakdown`
 
 **Resources exposed:**
 - `conport://now`

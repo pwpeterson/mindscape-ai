@@ -134,25 +134,16 @@
 			</a>
 
 			<a
-				href={withScope("/prompts")}
+				href={withScope("/context-metrics")}
 				class="text-sm font-medium px-2 py-1 rounded-md transition-colors duration-150 text-gray-300 hover:text-white hover:bg-white/5"
 				class:bg-sidebar-selected={$page.url.pathname.startsWith(
-					"/prompts",
+					"/context-metrics",
 				)}
-				class:text-white={$page.url.pathname.startsWith("/prompts")}
-			>
-				Prompts
-			</a>
-
-			<a
-				href={withScope("/tokens")}
-				class="text-sm font-medium px-2 py-1 rounded-md transition-colors duration-150 text-gray-300 hover:text-white hover:bg-white/5"
-				class:bg-sidebar-selected={$page.url.pathname.startsWith(
-					"/tokens",
+				class:text-white={$page.url.pathname.startsWith(
+					"/context-metrics",
 				)}
-				class:text-white={$page.url.pathname.startsWith("/tokens")}
 			>
-				Tokens
+				Context Metrics
 			</a>
 
 			<span class="mx-1 opacity-30">|</span>

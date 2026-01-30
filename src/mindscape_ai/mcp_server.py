@@ -4,11 +4,11 @@ Implements Phase 4 (P-28/P-29): expose Mindscape-AI's aggregated view as a local
 stdio MCP server using FastMCP.
 
 Tools:
-- conport.now
-- conport.search
-- mem0.search
-- prompts.files
-- tokens.breakdown
+- conport_now
+- conport_search
+- mem0_search
+- prompts_files
+- tokens_breakdown
 - add_app
 
 Resources:
@@ -80,7 +80,7 @@ def _raise_as_runtime(exc: Exception) -> None:
 
 
 @mcp.tool(
-    name="conport.now",
+    name="conport_now",
     description="Return ConPort product_context, active_context, and recent activity.",
     tags={"conport", "read"},
 )
@@ -93,7 +93,7 @@ async def tool_conport_now(app_id: str | None = None, db: str | None = None) -> 
 
 
 @mcp.tool(
-    name="conport.search",
+    name="conport_search",
     description="Search ConPort decisions and custom_data (FTS when available).",
     tags={"conport", "search", "read"},
 )
@@ -111,7 +111,7 @@ async def tool_conport_search(
 
 
 @mcp.tool(
-    name="mem0.search",
+    name="mem0_search",
     description="Semantic search over Mem0 memories with optional metadata filtering.",
     tags={"mem0", "search", "read"},
 )
@@ -130,7 +130,7 @@ async def tool_mem0_search(
 
 
 @mcp.tool(
-    name="prompts.files",
+    name="prompts_files",
     description="List prompt files with per-file stats (including approx token counts).",
     tags={"prompts", "read"},
 )
@@ -147,7 +147,7 @@ async def tool_prompts_files(
 
 
 @mcp.tool(
-    name="tokens.breakdown",
+    name="tokens_breakdown",
     description="Return approximate token breakdown across ConPort, Mem0, and prompts.",
     tags={"tokens", "read"},
 )
@@ -238,7 +238,7 @@ async def resource_conport_now() -> dict[str, Any]:
 
 @mcp.resource("tokens://breakdown")
 async def resource_tokens_breakdown() -> dict[str, Any]:
-    """Resource snapshot of tokens.breakdown using env defaults."""
+    """Resource snapshot of tokens_breakdown using env defaults."""
     prompts_max_file_bytes = _env_int("MINDSCAPE_MCP_PROMPTS_MAX_FILE_BYTES") or 200_000
     try:
         return await _tokens_breakdown(
