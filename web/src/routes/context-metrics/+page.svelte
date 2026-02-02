@@ -234,9 +234,14 @@
                     bind:value={appIdOverride}
                 />
                 <div class="mt-1 text-xs text-gray-300/70">
-                    Blank falls back to URL scope (if set). For model-proxy new
-                    schema, a digits-only value is treated as numeric app_id;
-                    otherwise it may match project_id depending on backend.
+                    Blank falls back to URL scope (if set). In this Mindscape
+                    UI,
+                    <code>app_id</code> is typically the workspace/app slug
+                    (e.g.
+                    <code>mindscape-ai</code>). If your model-proxy logs a
+                    numeric
+                    <code>app_id</code>, configure a mapping in Supabase:
+                    <code>mindscape_ai_apps.model_proxy_app_id</code>.
                 </div>
             </div>
 

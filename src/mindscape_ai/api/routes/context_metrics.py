@@ -134,33 +134,111 @@ class _SourceSpec:
     app_id_col: str | None
     project_id_col: str | None
 
+    # optional identity columns (not guaranteed across schema iterations)
+    request_id_col: str | None = None
+
 
 def _detect_source(client: Any) -> _SourceSpec:
     """Detect which model-proxy schema exists in the connected Supabase.
 
     Preference order:
-    1) model_proxy_api_requests (new, per user docs)
-    2) model_proxy_requests (existing in this repo)
+    1) model_proxy_api_requests (newer model-proxy schema; column names vary by deployment)
+    2) model_proxy_requests (older Mindscape schema)
     """
-    # Try new table first
+
+    def _probe_select(table: str, cols: list[str]) -> bool:
+        """Return True if selecting the given columns succeeds."""
+        try:
+            client.table(table).select(",".join(cols)).limit(1).execute()
+            return True
+        except Exception:
+            return False
+
+    # Try new table first (but be defensive about column names).
     try:
         client.table("model_proxy_api_requests").select("id").limit(1).execute()
+
+        # Column candidates observed across model-proxy iterations.
+        ts_candidates = ["timestamp", "request_timestamp", "created_at"]
+        provider_candidates = ["provider_name", "provider", "provider_id"]
+        model_candidates = ["model", "model_name"]
+        prompt_tok_candidates = ["prompt_tokens", "input_tokens"]
+        completion_tok_candidates = ["completion_tokens", "output_tokens"]
+        cost_candidates = ["total_cost_usd", "total_cost", "estimated_cost", "cost_usd"]
+        duration_candidates = ["duration_ms", "latency_ms"]
+        status_candidates = ["status_code", "http_status", "status"]
+        msg_count_candidates = ["message_count", "messages_count"]
+        metadata_candidates = ["metadata", "meta"]
+
+        # Optional identity/scope columns
+        request_id_candidates = ["request_id", "id"]
+        app_id_candidates = ["app_id", "app"]
+        project_id_candidates = ["project_id", "project"]
+
+        def _pick_first(table: str, candidates: list[str]) -> str | None:
+            for c in candidates:
+                if _probe_select(table, [c]):
+                    return c
+            return None
+
+        table = "model_proxy_api_requests"
+
+        ts_col = _pick_first(table, ts_candidates)
+        model_col = _pick_first(table, model_candidates)
+        provider_col = _pick_first(table, provider_candidates)
+        prompt_tokens_col = _pick_first(table, prompt_tok_candidates)
+        completion_tokens_col = _pick_first(table, completion_tok_candidates)
+        total_cost_col = _pick_first(table, cost_candidates)
+        duration_ms_col = _pick_first(table, duration_candidates)
+        status_code_col = _pick_first(table, status_candidates)
+        message_count_col = _pick_first(table, msg_count_candidates)
+        metadata_col = _pick_first(table, metadata_candidates)
+
+        required = {
+            "timestamp": ts_col,
+            "model": model_col,
+            "provider": provider_col,
+            "prompt_tokens": prompt_tokens_col,
+            "completion_tokens": completion_tokens_col,
+            "total_cost": total_cost_col,
+            "duration_ms": duration_ms_col,
+            "status_code": status_code_col,
+            "message_count": message_count_col,
+            "metadata": metadata_col,
+        }
+        missing = [k for k, v in required.items() if v is None]
+        if missing:
+            raise HTTPException(
+                status_code=500,
+                detail=(
+                    "model_proxy_api_requests exists but required columns could not be detected: "
+                    f"{missing}. Please update context-metrics column mapping."
+                ),
+            )
+
+        request_id_col = _pick_first(table, request_id_candidates)
+        app_id_col = _pick_first(table, app_id_candidates)
+        project_id_col = _pick_first(table, project_id_candidates)
+
         return _SourceSpec(
             kind="api_requests",
-            table="model_proxy_api_requests",
-            ts_col="timestamp",
-            model_col="model",
-            provider_col="provider_name",
-            prompt_tokens_col="prompt_tokens",
-            completion_tokens_col="completion_tokens",
-            total_cost_col="total_cost_usd",
-            duration_ms_col="duration_ms",
-            status_code_col="status_code",
-            message_count_col="message_count",
-            metadata_col="metadata",
-            app_id_col="app_id",  # integer in this schema
-            project_id_col="project_id",
+            table=table,
+            ts_col=ts_col or "timestamp",
+            model_col=model_col or "model",
+            provider_col=provider_col or "provider_name",
+            prompt_tokens_col=prompt_tokens_col or "prompt_tokens",
+            completion_tokens_col=completion_tokens_col or "completion_tokens",
+            total_cost_col=total_cost_col or "total_cost_usd",
+            duration_ms_col=duration_ms_col or "duration_ms",
+            status_code_col=status_code_col or "status_code",
+            message_count_col=message_count_col or "message_count",
+            metadata_col=metadata_col or "metadata",
+            app_id_col=app_id_col,
+            project_id_col=project_id_col,
+            request_id_col=request_id_col,
         )
+    except HTTPException:
+        raise
     except Exception:
         pass
 
@@ -191,6 +269,7 @@ def _detect_source(client: Any) -> _SourceSpec:
         metadata_col="metadata",
         app_id_col="app_id",  # varchar in this schema
         project_id_col="project_id",
+        request_id_col="request_id",
     )
 
 
@@ -280,6 +359,7 @@ def _meta_int(meta: Any, key: str) -> int | None:
 
 def _apply_scope_filters(
     *,
+    client: Any,
     query: Any,
     src: _SourceSpec,
     app_id: str | None,
@@ -289,12 +369,10 @@ def _apply_scope_filters(
 ) -> Any:
     """Apply common filters.
 
-    Scope heuristics:
-    - If src.kind == api_requests and app_id is digits-only: filter on integer app_id.
-    - If src.kind == api_requests and app_id is NOT digits-only:
-        try treating it as project_id (common deployment pattern).
-    - Otherwise: filter on app_id (string) when available.
-    - project_id param always filters on project_id when that column exists.
+    app_id handling:
+    - If app_id is digits-only, filter as int (works for integer columns; Postgres will also
+      coerce for text columns in many cases).
+    - Otherwise, filter as string.
     """
     if provider is not None:
         query = query.eq(src.provider_col, provider)
@@ -305,11 +383,8 @@ def _apply_scope_filters(
         query = query.eq(src.project_id_col, project_id)
 
     if app_id is not None and src.app_id_col is not None:
-        if src.kind == "api_requests":
-            if app_id.isdigit():
-                query = query.eq(src.app_id_col, int(app_id))
-            elif src.project_id_col is not None:
-                query = query.eq(src.project_id_col, app_id)
+        if app_id.isdigit():
+            query = query.eq(src.app_id_col, int(app_id))
         else:
             query = query.eq(src.app_id_col, app_id)
 
@@ -328,30 +403,35 @@ def _fetch_rows(
     limit: int,
 ) -> list[dict[str, Any]]:
     # Keep selects minimal; we do aggregation in Python.
-    select_cols = ",".join(
-        [
-            src.ts_col,
-            src.model_col,
-            src.provider_col,
-            src.prompt_tokens_col,
-            src.completion_tokens_col,
-            src.total_cost_col,
-            src.duration_ms_col,
-            src.status_code_col,
-            src.message_count_col,
-            src.metadata_col,
-            # identity columns to return where useful
-            "request_id",
-            "project_id",
-            "app_id",
-        ]
-    )
+    cols: list[str] = [
+        src.ts_col,
+        src.model_col,
+        src.provider_col,
+        src.prompt_tokens_col,
+        src.completion_tokens_col,
+        src.total_cost_col,
+        src.duration_ms_col,
+        src.status_code_col,
+        src.message_count_col,
+        src.metadata_col,
+    ]
+
+    # Identity columns are not guaranteed across schema iterations; only select if detected.
+    if src.request_id_col:
+        cols.append(src.request_id_col)
+    if src.project_id_col:
+        cols.append(src.project_id_col)
+    if src.app_id_col:
+        cols.append(src.app_id_col)
+
+    select_cols = ",".join(dict.fromkeys(cols))  # preserve order, de-dupe
 
     since_iso = _iso(since_dt)
 
     try:
         query = client.table(src.table).select(select_cols)
         query = _apply_scope_filters(
+            client=client,
             query=query,
             src=src,
             app_id=app_id,
@@ -362,9 +442,18 @@ def _fetch_rows(
         query = query.gte(src.ts_col, since_iso).order(src.ts_col, desc=True).limit(limit)
 
         resp = query.execute()
+    except HTTPException:
+        # Preserve intended status codes (e.g., 400 for invalid scope/mapping).
+        raise
     except httpx.HTTPError as exc:
         raise HTTPException(status_code=503, detail="Supabase is unreachable (context metrics).") from exc
     except Exception as exc:  # noqa: BLE001
+        msg = str(exc)
+        if "invalid input syntax for type integer" in msg or "22P02" in msg:
+            raise HTTPException(
+                status_code=400,
+                detail="app_id must be numeric for this model-proxy schema.",
+            ) from exc
         raise HTTPException(status_code=500, detail=f"Failed to query {src.table}: {exc}") from exc
 
     data = getattr(resp, "data", None)
@@ -772,28 +861,33 @@ async def top_cost_requests(
     since_dt = _utc_now() - timedelta(days=int(since_days))
     since_iso = _iso(since_dt)
 
-    select_cols = ",".join(
-        [
-            "request_id",
-            src.ts_col,
-            src.model_col,
-            src.provider_col,
-            src.prompt_tokens_col,
-            src.completion_tokens_col,
-            src.total_cost_col,
-            src.duration_ms_col,
-            src.status_code_col,
-            src.message_count_col,
-            "prompt_char_count",
-            "project_id",
-            "app_id",
-            src.metadata_col,
-        ]
-    )
+    cols: list[str] = [
+        src.ts_col,
+        src.model_col,
+        src.provider_col,
+        src.prompt_tokens_col,
+        src.completion_tokens_col,
+        src.total_cost_col,
+        src.duration_ms_col,
+        src.status_code_col,
+        src.message_count_col,
+        src.metadata_col,
+        "prompt_char_count",
+    ]
+
+    if src.request_id_col:
+        cols.append(src.request_id_col)
+    if src.project_id_col:
+        cols.append(src.project_id_col)
+    if src.app_id_col:
+        cols.append(src.app_id_col)
+
+    select_cols = ",".join(dict.fromkeys(cols))
 
     try:
         query = client.table(src.table).select(select_cols)
         query = _apply_scope_filters(
+            client=client,
             query=query,
             src=src,
             app_id=app_id,
@@ -819,7 +913,7 @@ async def top_cost_requests(
         meta = r.get(src.metadata_col)
         out.append(
             {
-                "request_id": r.get("request_id"),
+                "request_id": r.get(src.request_id_col or "request_id"),
                 "timestamp": r.get(src.ts_col),
                 "provider": r.get(src.provider_col),
                 "model": r.get(src.model_col),
@@ -830,8 +924,8 @@ async def top_cost_requests(
                 "status_code": r.get(src.status_code_col),
                 "message_count": r.get(src.message_count_col),
                 "prompt_char_count": r.get("prompt_char_count"),
-                "app_id": r.get("app_id"),
-                "project_id": r.get("project_id"),
+                "app_id": r.get(src.app_id_col or "app_id"),
+                "project_id": r.get(src.project_id_col or "project_id"),
                 "rules_injected": _meta_bool(meta, "rules_injected"),
                 "context_condensed": _meta_bool(meta, "context_condensed"),
             }
