@@ -31,11 +31,27 @@ EmbedderProvider = Literal["openai", "ollama", "huggingface"]
 
 
 def _env(key: str, default: str | None = None) -> str | None:
+    """Read an environment variable with whitespace/empty-string normalization."""
     val = os.getenv(key)
     if val is None:
         return default
     s = val.strip()
     return s if s != "" else default
+
+
+def _env_alias(keys: list[str], default: str | None = None) -> str | None:
+    """Read the first non-empty env var from a list of aliases.
+
+    This allows Mindscape-AI to support both the upstream mem0 conventions (MEM0_*)
+    and Mindscape's own non-secret defaults file conventions (MEMORY_*, QDRANT_*).
+
+    Precedence: first key in `keys` wins.
+    """
+    for k in keys:
+        v = _env(k)
+        if v is not None:
+            return v
+    return default
 
 
 def _env_int(key: str, default: int) -> int:
@@ -93,12 +109,20 @@ class Mem0Settings:
     def from_env() -> "Mem0Settings":
         """Load Mem0 settings from environment variables.
 
+        Supported conventions:
+        - Upstream mem0 / mem0-mcp: MEM0_*
+        - Mindscape non-secret defaults (mindscape-ai.env): MEMORY_* and QDRANT_*
+
         Notes:
-            Keys align with the mem0-mcp server convention (MEM0_*).
+            - Aliases are best-effort and intentionally conservative.
+            - Precedence favors MEM0_* when both are set.
         """
         vector_provider = cast(
             VectorProvider,
-            (_env("MEM0_VECTOR_PROVIDER", "qdrant") or "qdrant").lower(),
+            (
+                _env_alias(["MEM0_VECTOR_PROVIDER", "MEMORY_VECTOR_STORE"], "qdrant")
+                or "qdrant"
+            ).lower(),
         )
         llm_provider = cast(
             LLMProvider,
@@ -109,14 +133,54 @@ class Mem0Settings:
             (_env("MEM0_EMBEDDER_PROVIDER", "openai") or "openai").lower(),
         )
 
+        # Qdrant host/port can be provided either as MEM0_QDRANT_HOST/PORT (preferred)
+        # or as a single QDRANT_URL (Mindscape defaults file).
+        qdrant_url = _env("QDRANT_URL")
+        qdrant_host = _env("MEM0_QDRANT_HOST")
+        qdrant_port = _env_int("MEM0_QDRANT_PORT", 6333)
+
+        if (qdrant_host is None or qdrant_host == "") and qdrant_url:
+            # Accept http(s)://host:port or host:port
+            try:
+                from urllib.parse import urlparse
+            except Exception:  # noqa: BLE001
+                urlparse = None  # type: ignore[assignment]
+
+            parsed_host: str | None = None
+            parsed_port: int | None = None
+
+            if urlparse is not None and "://" in qdrant_url:
+                u = urlparse(qdrant_url)
+                parsed_host = u.hostname
+                parsed_port = u.port
+            else:
+                # host:port
+                if ":" in qdrant_url:
+                    h, p = qdrant_url.rsplit(":", 1)
+                    parsed_host = h.strip() or None
+                    try:
+                        parsed_port = int(p.strip())
+                    except ValueError:
+                        parsed_port = None
+                else:
+                    parsed_host = qdrant_url.strip() or None
+
+            if parsed_host:
+                qdrant_host = parsed_host
+            if parsed_port is not None:
+                qdrant_port = parsed_port
+
         return Mem0Settings(
             default_user_id=_env("MEM0_DEFAULT_USER_ID", "default") or "default",
             default_app_id=_env("MEM0_DEFAULT_APP_ID", "mindscape-ai") or "mindscape-ai",
             vector_provider=vector_provider,
-            qdrant_host=_env("MEM0_QDRANT_HOST", "localhost") or "localhost",
-            qdrant_port=_env_int("MEM0_QDRANT_PORT", 6333),
-            qdrant_api_key=_env("MEM0_QDRANT_API_KEY"),
-            collection_name=_env("MEM0_COLLECTION_NAME", "mem0_memories") or "mem0_memories",
+            qdrant_host=qdrant_host or "localhost",
+            qdrant_port=qdrant_port,
+            qdrant_api_key=_env_alias(["MEM0_QDRANT_API_KEY", "QDRANT_API_KEY"]),
+            collection_name=(
+                _env_alias(["MEM0_COLLECTION_NAME", "MEMORY_COLLECTION_NAME"], "mem0_memories")
+                or "mem0_memories"
+            ),
             llm_provider=llm_provider,
             llm_model=_env("MEM0_LLM_MODEL", "gpt-4o-mini") or "gpt-4o-mini",
             llm_temperature=_env_float("MEM0_LLM_TEMPERATURE", 0.1),

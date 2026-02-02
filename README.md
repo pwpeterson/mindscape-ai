@@ -191,6 +191,26 @@ export MEM0_API_KEY="your-api-key"
 export OPENAI_API_KEY="your-openai-key"
 ```
 
+#### Mem0 env var conventions (MEM0_* + Mindscape aliases)
+
+Mindscape-AI’s Mem0 integration primarily follows the upstream `mem0` / `mem0-mcp` environment variable conventions (`MEM0_*`). For convenience, the API container can also read a small set of **non-secret** aliases that match the defaults in [`mindscape-ai.env`](mindscape-ai.env:1).
+
+**Preferred (upstream) keys:**
+- `MEM0_COLLECTION_NAME` (default: `mem0_memories`)
+- `MEM0_VECTOR_PROVIDER` (default: `qdrant`)
+- `MEM0_QDRANT_HOST` / `MEM0_QDRANT_PORT`
+- `MEM0_QDRANT_API_KEY` (optional)
+- `MEM0_DEFAULT_USER_ID` (default: `default`)
+- `MEM0_DEFAULT_APP_ID` (default: `mindscape-ai`)
+
+**Supported aliases (loaded from mindscape-ai.env):**
+- `MEMORY_COLLECTION_NAME` → `MEM0_COLLECTION_NAME`
+- `MEMORY_VECTOR_STORE` → `MEM0_VECTOR_PROVIDER`
+- `QDRANT_API_KEY` → `MEM0_QDRANT_API_KEY`
+- `QDRANT_URL` → parsed into `MEM0_QDRANT_HOST` / `MEM0_QDRANT_PORT` (only used if `MEM0_QDRANT_HOST` is not set)
+
+**Precedence rule:** if both are set, `MEM0_*` wins over the alias.
+
 ---
 
 ## Usage
