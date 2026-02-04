@@ -204,7 +204,7 @@ def _resolve_conport_db_from_app_id(app_id: str) -> Path:
     implicit app when `app_id` matches its `[project].name`.
     """
     logger.info(f"[ConPort API] Resolving DB for app_id={app_id}")
-    
+
     self_info = _self_app_db()
     if self_info is not None and app_id == self_info[0]:
         logger.info(f"[ConPort API] Matched self app: {self_info[0]} -> {self_info[1]}")
@@ -249,7 +249,7 @@ def _resolve_conport_db_from_app_id(app_id: str) -> Path:
 
     resolved = mapping[app_id].resolve()
     logger.info(f"[ConPort API] Resolved via env mapping: {resolved}")
-    
+
     if resolved.suffix.lower() != ".db":
         logger.error(f"[ConPort API] Invalid DB suffix: {resolved}")
         raise HTTPException(status_code=400, detail="Resolved ConPort DB must end with '.db'.")
@@ -269,7 +269,7 @@ async def _open_aiosqlite(
     2) db query param (legacy/workbench) -> DB via resolve_conport_db_path()
     """
     logger.debug(f"[ConPort API] _open_aiosqlite called with app_id={app_id}, db_path={db_path}, read_only={read_only}")
-    
+
     _validate_app_id_query_param(app_id)
     if app_id is not None:
         resolved = _resolve_conport_db_from_app_id(app_id)

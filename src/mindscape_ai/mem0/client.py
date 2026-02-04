@@ -106,7 +106,7 @@ class Mem0Settings:
     ollama_base_url: str = "http://localhost:11434"
 
     @staticmethod
-    def from_env() -> "Mem0Settings":
+    def from_env() -> Mem0Settings:
         """Load Mem0 settings from environment variables.
 
         Supported conventions:

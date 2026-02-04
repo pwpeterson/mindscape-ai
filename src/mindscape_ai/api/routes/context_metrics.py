@@ -12,11 +12,13 @@ Data sources
 ------------
 model-proxy has had multiple schema iterations. In this repo we already query:
 
-- public.model_proxy_requests (string app_id, request_timestamp, input_tokens/output_tokens, estimated_cost)
+- public.model_proxy_requests
+  (string app_id, request_timestamp, input_tokens/output_tokens, estimated_cost)
 
 The updated model-proxy schema (as provided by the user) uses:
 
-- public.model_proxy_api_requests (integer app_id, timestamp, prompt_tokens/completion_tokens, total_cost_usd)
+- public.model_proxy_api_requests
+  (integer app_id, timestamp, prompt_tokens/completion_tokens, total_cost_usd)
 
 This router supports BOTH by detecting which table exists at runtime and mapping columns
 accordingly.
@@ -36,6 +38,11 @@ Endpoints (v1)
 - GET /api/v1/context-metrics/top-cost
 - GET /api/v1/context-metrics/hourly
 - GET /api/v1/context-metrics/errors
+
+Request drill-down (v1)
+-----------------------
+- GET /api/v1/context-metrics/request/lookup
+- GET /api/v1/context-metrics/request/details
 """
 
 from __future__ import annotations
@@ -60,6 +67,10 @@ MODEL_QUERY_MAX_LEN: Final[int] = 200
 # Hard limits for query sizes (avoid downloading unbounded tables)
 MAX_ROWS_PER_QUERY: Final[int] = 20_000
 MAX_TOP_COST_LIMIT: Final[int] = 200
+
+# Drill-down guardrails
+MAX_REQUEST_LOOKUP_LIMIT: Final[int] = 200
+MAX_REQUEST_CHILD_ROWS: Final[int] = 2_000
 
 # Time window guardrails
 MAX_DAYS: Final[int] = 365
@@ -287,13 +298,13 @@ def _percentile_sorted(values_sorted: list[int], p: float) -> int | None:
         return values_sorted[-1]
     # nearest-rank: ceil(p * n) - 1
     n = len(values_sorted)
-    idx = int((p * n + (1.0 - 1e-12)) // 1)  # floor-ish, then adjust to nearest rank
+
     # Use ceil by computing rank and subtracting 1
     import math
 
     rank = max(1, int(math.ceil(p * n)))
-    idx2 = min(n - 1, rank - 1)
-    return values_sorted[idx2]
+    idx = min(n - 1, rank - 1)
+    return values_sorted[idx]
 
 
 def _safe_int(v: Any) -> int:
@@ -446,7 +457,10 @@ def _fetch_rows(
         # Preserve intended status codes (e.g., 400 for invalid scope/mapping).
         raise
     except httpx.HTTPError as exc:
-        raise HTTPException(status_code=503, detail="Supabase is unreachable (context metrics).") from exc
+        raise HTTPException(
+            status_code=503,
+            detail="Supabase is unreachable (context metrics).",
+        ) from exc
     except Exception as exc:  # noqa: BLE001
         msg = str(exc)
         if "invalid input syntax for type integer" in msg or "22P02" in msg:
@@ -458,7 +472,10 @@ def _fetch_rows(
 
     data = getattr(resp, "data", None)
     if not isinstance(data, list):
-        raise HTTPException(status_code=500, detail=f"Unexpected response from Supabase ({src.table})")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Unexpected response from Supabase ({src.table})",
+        )
 
     return [r for r in data if isinstance(r, dict)]
 
@@ -489,86 +506,178 @@ async def condensation_roi(
     since_days: int = Query(default=7, ge=1, le=MAX_DAYS),
     max_rows: int = Query(default=10_000, ge=100, le=MAX_ROWS_PER_QUERY),
 ) -> dict[str, Any]:
-    """Condensation ROI summary (based on Query 8).
+    """Condensation ROI summary for the minimal request-context schema.
 
-    Computes:
-    - condensation_rate_pct
-    - avg_tokens_saved_per_request (from metadata.context_tokens_saved)
-    - token_reduction_pct (avg non-condensed prompt tokens vs condensed prompt tokens)
-    - total_cost_usd
-    - estimated_savings_usd (rough, configurable by client later)
+    Uses:
+    - public.model_proxy_requests (request_id, request_timestamp, provider, model, app_id, ...)
+    - public.model_proxy_request_contexts (raw/condensed token counts + tokens_saved)
+
+    Notes:
+    - This minimal schema does not store per-request cost, so total_cost_usd is null.
+    - estimated_savings_usd uses the same rough $0.000005/token heuristic as the prior version.
     """
     _validate_app_id(app_id)
     _validate_provider(provider)
     _validate_model(model)
     if project_id is not None:
+        # The minimal schema does not have project_id, but keep this param for API stability.
         _validate_len("project_id", project_id, 255)
 
     client = _get_client_or_503()
-    src = _detect_source(client)
 
+    # ---- Step 1: fetch recent requests in scope (cap by max_rows) ----
     since_dt = _utc_now() - timedelta(days=int(since_days))
-    rows = _fetch_rows(
-        client=client,
-        src=src,
-        since_dt=since_dt,
-        app_id=app_id,
-        project_id=project_id,
-        provider=provider,
-        model=model,
-        limit=int(max_rows),
-    )
+    since_iso = _iso(since_dt)
 
-    total_requests = len(rows)
+    try:
+        q = (
+            client.table("model_proxy_requests")
+            .select("request_id,request_timestamp,provider,model,app_id")
+            .gte("request_timestamp", since_iso)
+            .order("request_timestamp", desc=True)
+            .limit(int(max_rows))
+        )
+
+        if app_id is not None:
+            q = q.eq("app_id", app_id)
+        if provider is not None:
+            q = q.eq("provider", provider)
+        if model is not None:
+            q = q.eq("model", model)
+
+        req_resp = q.execute()
+    except httpx.HTTPError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="Supabase is unreachable (context ROI).",
+        ) from exc
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(
+            status_code=500, detail=f"Failed to query model_proxy_requests (ROI): {exc}"
+        ) from exc
+
+    req_data = getattr(req_resp, "data", None)
+    if not isinstance(req_data, list):
+        raise HTTPException(
+            status_code=500, detail="Unexpected response from Supabase (model_proxy_requests)"
+        )
+
+    request_ids: list[str] = []
+    for r in req_data:
+        if isinstance(r, dict):
+            rid = r.get("request_id")
+            if isinstance(rid, str) and rid.strip():
+                request_ids.append(rid.strip())
+
+    total_requests = len(request_ids)
+    if total_requests == 0:
+        return {
+            "filters": {
+                "app_id": app_id,
+                "project_id": project_id,
+                "provider": provider,
+                "model": model,
+                "since_days": since_days,
+                "max_rows": max_rows,
+            },
+            "source": {
+                "type": "supabase",
+                "table": "model_proxy_requests+model_proxy_request_contexts",
+            },
+            "stats": {
+                "total_requests": 0,
+                "condensed_requests": 0,
+                "condensation_rate_pct": None,
+                "avg_tokens_condensed": None,
+                "avg_tokens_not_condensed": None,
+                "avg_tokens_saved_per_request": None,
+                "token_reduction_pct": None,
+                "total_cost_usd": None,
+                "estimated_savings_usd": None,
+            },
+            "notes": {"cost_available": False},
+        }
+
+    # ---- Step 2: fetch contexts for those request_ids (chunked) ----
+    def _chunks(items: list[str], size: int) -> list[list[str]]:
+        out: list[list[str]] = []
+        for i in range(0, len(items), size):
+            out.append(items[i : i + size])
+        return out
+
+    context_rows: list[dict[str, Any]] = []
+    for chunk in _chunks(request_ids, 200):
+        try:
+            ctx_resp = (
+                client.table("model_proxy_request_contexts")
+                .select(
+                    ",".join(
+                        [
+                            "request_id",
+                            "raw_context_token_count",
+                            "condensed_context_token_count",
+                            "tokens_saved",
+                        ]
+                    )
+                )
+                .in_("request_id", chunk)
+                .execute()
+            )
+        except Exception:
+            continue
+
+        ctx_data = getattr(ctx_resp, "data", None)
+        if isinstance(ctx_data, list):
+            for r in ctx_data:
+                if isinstance(r, dict):
+                    context_rows.append(r)
+
+    # Compute ROI metrics from contexts table.
     condensed_requests = 0
 
-    tokens_condensed_sum = 0
-    tokens_condensed_n = 0
+    raw_tok_sum = 0
+    raw_tok_n = 0
 
-    tokens_not_condensed_sum = 0
-    tokens_not_condensed_n = 0
+    condensed_tok_sum = 0
+    condensed_tok_n = 0
 
     tokens_saved_sum = 0
     tokens_saved_n = 0
 
-    total_cost = 0.0
+    for r in context_rows:
+        raw_tok = _meta_int(r, "raw_context_token_count")
+        condensed_tok = _meta_int(r, "condensed_context_token_count")
+        saved = _meta_int(r, "tokens_saved")
 
-    for r in rows:
-        meta = r.get(src.metadata_col)
-        is_condensed = _meta_bool(meta, "context_condensed")
-        prompt_tokens = _safe_int(r.get(src.prompt_tokens_col))
-        total_cost += _safe_float(r.get(src.total_cost_col))
-
-        if is_condensed:
+        # Count as "condensed row" if we have both token counts OR saved tokens.
+        if raw_tok is not None or condensed_tok is not None or saved is not None:
             condensed_requests += 1
-            tokens_condensed_sum += prompt_tokens
-            tokens_condensed_n += 1
-        else:
-            tokens_not_condensed_sum += prompt_tokens
-            tokens_not_condensed_n += 1
 
-        saved = _meta_int(meta, "context_tokens_saved")
+        if raw_tok is not None:
+            raw_tok_sum += raw_tok
+            raw_tok_n += 1
+        if condensed_tok is not None:
+            condensed_tok_sum += condensed_tok
+            condensed_tok_n += 1
         if saved is not None:
             tokens_saved_sum += saved
             tokens_saved_n += 1
 
-    avg_tokens_condensed = (tokens_condensed_sum / tokens_condensed_n) if tokens_condensed_n else None
-    avg_tokens_not_condensed = (tokens_not_condensed_sum / tokens_not_condensed_n) if tokens_not_condensed_n else None
-    avg_tokens_saved = (tokens_saved_sum / tokens_saved_n) if tokens_saved_n else None
+    avg_raw = (raw_tok_sum / raw_tok_n) if raw_tok_n else None
+    avg_condensed = (condensed_tok_sum / condensed_tok_n) if condensed_tok_n else None
+    avg_saved = (tokens_saved_sum / tokens_saved_n) if tokens_saved_n else None
 
-    if total_requests:
-        condensation_rate_pct = (condensed_requests / total_requests) * 100.0
-    else:
-        condensation_rate_pct = None
+    condensation_rate_pct = (
+        (condensed_requests / total_requests * 100.0) if total_requests else None
+    )
 
     token_reduction_pct = None
-    if avg_tokens_condensed is not None and avg_tokens_not_condensed not in (None, 0):
-        token_reduction_pct = ((avg_tokens_not_condensed - avg_tokens_condensed) / avg_tokens_not_condensed) * 100.0
+    if avg_raw is not None and avg_raw not in (None, 0) and avg_condensed is not None:
+        token_reduction_pct = ((avg_raw - avg_condensed) / avg_raw) * 100.0
 
-    # Keep same "rough" constant from docs query (assumes $0.000005/token).
     estimated_savings_usd = None
-    if avg_tokens_saved is not None:
-        estimated_savings_usd = float(avg_tokens_saved) * condensed_requests * 0.000005
+    if avg_saved is not None:
+        estimated_savings_usd = float(avg_saved) * condensed_requests * 0.000005
 
     return {
         "filters": {
@@ -579,18 +688,28 @@ async def condensation_roi(
             "since_days": since_days,
             "max_rows": max_rows,
         },
-        "source": {"type": "supabase", "table": src.table},
+        "source": {
+            "type": "supabase",
+            "table": "model_proxy_requests+model_proxy_request_contexts",
+        },
         "stats": {
             "total_requests": total_requests,
             "condensed_requests": condensed_requests,
-            "condensation_rate_pct": None if condensation_rate_pct is None else round(condensation_rate_pct, 1),
-            "avg_tokens_condensed": None if avg_tokens_condensed is None else round(avg_tokens_condensed, 0),
-            "avg_tokens_not_condensed": None if avg_tokens_not_condensed is None else round(avg_tokens_not_condensed, 0),
-            "avg_tokens_saved_per_request": None if avg_tokens_saved is None else round(avg_tokens_saved, 0),
-            "token_reduction_pct": None if token_reduction_pct is None else round(token_reduction_pct, 1),
-            "total_cost_usd": round(total_cost, 4),
-            "estimated_savings_usd": None if estimated_savings_usd is None else round(estimated_savings_usd, 4),
+            "condensation_rate_pct": None
+            if condensation_rate_pct is None
+            else round(condensation_rate_pct, 1),
+            "avg_tokens_condensed": None if avg_condensed is None else round(avg_condensed, 0),
+            "avg_tokens_not_condensed": None if avg_raw is None else round(avg_raw, 0),
+            "avg_tokens_saved_per_request": None if avg_saved is None else round(avg_saved, 0),
+            "token_reduction_pct": None
+            if token_reduction_pct is None
+            else round(token_reduction_pct, 1),
+            "total_cost_usd": None,
+            "estimated_savings_usd": None
+            if estimated_savings_usd is None
+            else round(estimated_savings_usd, 4),
         },
+        "notes": {"cost_available": False},
     }
 
 
@@ -603,13 +722,13 @@ async def daily_token_trends(
     days: int = Query(default=30, ge=1, le=MAX_DAYS),
     max_rows: int = Query(default=20_000, ge=100, le=MAX_ROWS_PER_QUERY),
 ) -> dict[str, Any]:
-    """Daily token usage trends (based on Query 1).
+    """Daily request token trends (minimal schema).
 
-    Computes per (date, model):
-    - request_count
-    - avg_prompt_tokens, median_prompt_tokens, p95_prompt_tokens, max_prompt_tokens
-    - avg_completion_tokens
-    - avg_cost, total_cost
+    Minimal schema has:
+    - model_proxy_requests.request_token_count (treated as "prompt" tokens)
+    - model_proxy_requests.response_token_count (treated as "completion" tokens)
+
+    Cost is not available in the minimal schema, so avg_cost_usd/total_cost_usd are null.
     """
     _validate_app_id(app_id)
     _validate_provider(provider)
@@ -618,29 +737,64 @@ async def daily_token_trends(
         _validate_len("project_id", project_id, 255)
 
     client = _get_client_or_503()
-    src = _detect_source(client)
 
     since_dt = _utc_now() - timedelta(days=int(days))
-    rows = _fetch_rows(
-        client=client,
-        src=src,
-        since_dt=since_dt,
-        app_id=app_id,
-        project_id=project_id,
-        provider=provider,
-        model=model,
-        limit=int(max_rows),
-    )
+    since_iso = _iso(since_dt)
+
+    try:
+        q = (
+            client.table("model_proxy_requests")
+            .select(
+                ",".join(
+                    [
+                        "request_timestamp",
+                        "model",
+                        "provider",
+                        "app_id",
+                        "request_token_count",
+                        "response_token_count",
+                    ]
+                )
+            )
+            .gte("request_timestamp", since_iso)
+            .order("request_timestamp", desc=True)
+            .limit(int(max_rows))
+        )
+
+        if app_id is not None:
+            q = q.eq("app_id", app_id)
+        if provider is not None:
+            q = q.eq("provider", provider)
+        if model is not None:
+            q = q.eq("model", model)
+
+        resp = q.execute()
+    except httpx.HTTPError as exc:
+        raise HTTPException(
+            status_code=503, detail="Supabase is unreachable (daily context metrics)."
+        ) from exc
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(
+            status_code=500, detail=f"Failed to query model_proxy_requests (daily): {exc}"
+        ) from exc
+
+    data = getattr(resp, "data", None)
+    if not isinstance(data, list):
+        raise HTTPException(
+            status_code=500, detail="Unexpected response from Supabase (model_proxy_requests)"
+        )
+
+    rows: list[dict[str, Any]] = [r for r in data if isinstance(r, dict)]
 
     # group by (date, model)
     groups: dict[tuple[str, str], dict[str, Any]] = {}
 
     for r in rows:
-        ts = _parse_ts(r.get(src.ts_col))
+        ts = _parse_ts(r.get("request_timestamp"))
         if ts is None:
             continue
         date = _date_key(ts)
-        m = str(r.get(src.model_col) or "unknown")
+        m = str(r.get("model") or "unknown")
 
         key = (date, m)
         g = groups.get(key)
@@ -652,19 +806,16 @@ async def daily_token_trends(
                 "prompt_tokens": [],
                 "completion_tokens_sum": 0,
                 "completion_tokens_n": 0,
-                "cost_sum": 0.0,
             }
             groups[key] = g
 
         g["request_count"] += 1
-        pt = _safe_int(r.get(src.prompt_tokens_col))
+        pt = _safe_int(r.get("request_token_count"))
         g["prompt_tokens"].append(pt)
 
-        ct = _safe_int(r.get(src.completion_tokens_col))
+        ct = _safe_int(r.get("response_token_count"))
         g["completion_tokens_sum"] += ct
         g["completion_tokens_n"] += 1
-
-        g["cost_sum"] += _safe_float(r.get(src.total_cost_col))
 
     out: list[dict[str, Any]] = []
     for (_date, _model), g in groups.items():
@@ -676,9 +827,10 @@ async def daily_token_trends(
         mx = pts[-1] if pts else None
 
         avg_completion = (
-            (g["completion_tokens_sum"] / g["completion_tokens_n"]) if g["completion_tokens_n"] else None
+            (g["completion_tokens_sum"] / g["completion_tokens_n"])
+            if g["completion_tokens_n"]
+            else None
         )
-        avg_cost = (g["cost_sum"] / g["request_count"]) if g["request_count"] else None
 
         out.append(
             {
@@ -689,20 +841,32 @@ async def daily_token_trends(
                 "median_prompt_tokens": median,
                 "p95_prompt_tokens": p95,
                 "max_prompt_tokens": mx,
-                "avg_completion_tokens": None if avg_completion is None else round(avg_completion, 0),
-                "avg_cost_usd": None if avg_cost is None else round(avg_cost, 6),
-                "total_cost_usd": round(g["cost_sum"], 4),
+                "avg_completion_tokens": None
+                if avg_completion is None
+                else round(avg_completion, 0),
+                "avg_cost_usd": None,
+                "total_cost_usd": None,
             }
         )
 
     out.sort(key=lambda r: (r["date"], r["model"]), reverse=True)
 
     return {
-        "filters": {"app_id": app_id, "project_id": project_id, "provider": provider, "model": model, "days": days},
-        "source": {"type": "supabase", "table": src.table},
+        "filters": {
+            "app_id": app_id,
+            "project_id": project_id,
+            "provider": provider,
+            "model": model,
+            "days": days,
+        },
+        "source": {"type": "supabase", "table": "model_proxy_requests"},
         "count": len(out),
         "rows": out,
-        "notes": {"percentiles": "nearest-rank in Python", "max_rows": max_rows},
+        "notes": {
+            "percentiles": "nearest-rank in Python",
+            "max_rows": max_rows,
+            "cost_available": False,
+        },
     }
 
 
@@ -715,127 +879,35 @@ async def condensation_effectiveness_by_type(
     days: int = Query(default=30, ge=1, le=MAX_DAYS),
     max_rows: int = Query(default=20_000, ge=100, le=MAX_ROWS_PER_QUERY),
 ) -> dict[str, Any]:
-    """Condensation effectiveness by type (based on Query 3)."""
+    """Condensation effectiveness breakdown (minimal schema).
+
+    The prior "by-type" endpoint relied on metadata keys (rules injected, code-jit injected)
+    that no longer exist in the minimal schema.
+
+    For now this endpoint returns an empty set to preserve API stability for the UI.
+    """
     _validate_app_id(app_id)
     _validate_provider(provider)
     _validate_model(model)
     if project_id is not None:
         _validate_len("project_id", project_id, 255)
 
-    client = _get_client_or_503()
-    src = _detect_source(client)
-
-    since_dt = _utc_now() - timedelta(days=int(days))
-    rows = _fetch_rows(
-        client=client,
-        src=src,
-        since_dt=since_dt,
-        app_id=app_id,
-        project_id=project_id,
-        provider=provider,
-        model=model,
-        limit=int(max_rows),
-    )
-
-    # group by (date, model)
-    groups: dict[tuple[str, str], dict[str, Any]] = {}
-
-    def _get_group(date: str, m: str) -> dict[str, Any]:
-        key = (date, m)
-        g = groups.get(key)
-        if g is None:
-            g = {
-                "date": date,
-                "model": m,
-                "total_requests": 0,
-                "rules_injected_count": 0,
-                "rules_tokens_sum": 0,
-                "rules_tokens_n": 0,
-                "code_jit_count": 0,
-                "code_jit_tokens_sum": 0,
-                "code_jit_tokens_n": 0,
-                "condensed_count": 0,
-                "tokens_saved_sum": 0,
-                "tokens_saved_n": 0,
-                "prompt_tokens_sum": 0,
-                "prompt_tokens_n": 0,
-                "cost_sum": 0.0,
-            }
-            groups[key] = g
-        return g
-
-    for r in rows:
-        ts = _parse_ts(r.get(src.ts_col))
-        if ts is None:
-            continue
-        date = _date_key(ts)
-        m = str(r.get(src.model_col) or "unknown")
-        g = _get_group(date, m)
-
-        g["total_requests"] += 1
-
-        meta = r.get(src.metadata_col)
-        if _meta_bool(meta, "rules_injected"):
-            g["rules_injected_count"] += 1
-        rules_tokens = _meta_int(meta, "rules_tokens")
-        if rules_tokens is not None:
-            g["rules_tokens_sum"] += rules_tokens
-            g["rules_tokens_n"] += 1
-
-        if _meta_bool(meta, "code_jit_injected"):
-            g["code_jit_count"] += 1
-        code_tokens = _meta_int(meta, "code_jit_tokens")
-        if code_tokens is not None:
-            g["code_jit_tokens_sum"] += code_tokens
-            g["code_jit_tokens_n"] += 1
-
-        if _meta_bool(meta, "context_condensed"):
-            g["condensed_count"] += 1
-        saved = _meta_int(meta, "context_tokens_saved")
-        if saved is not None:
-            g["tokens_saved_sum"] += saved
-            g["tokens_saved_n"] += 1
-
-        pt = _safe_int(r.get(src.prompt_tokens_col))
-        g["prompt_tokens_sum"] += pt
-        g["prompt_tokens_n"] += 1
-
-        g["cost_sum"] += _safe_float(r.get(src.total_cost_col))
-
-    out: list[dict[str, Any]] = []
-    for (_date, _model), g in groups.items():
-        out.append(
-            {
-                "date": g["date"],
-                "model": g["model"],
-                "total_requests": g["total_requests"],
-                "rules_injected_count": g["rules_injected_count"],
-                "avg_rules_tokens": None
-                if not g["rules_tokens_n"]
-                else round(g["rules_tokens_sum"] / g["rules_tokens_n"], 0),
-                "code_jit_count": g["code_jit_count"],
-                "avg_code_jit_tokens": None
-                if not g["code_jit_tokens_n"]
-                else round(g["code_jit_tokens_sum"] / g["code_jit_tokens_n"], 0),
-                "condensed_count": g["condensed_count"],
-                "avg_tokens_saved": None
-                if not g["tokens_saved_n"]
-                else round(g["tokens_saved_sum"] / g["tokens_saved_n"], 0),
-                "avg_prompt_tokens": None
-                if not g["prompt_tokens_n"]
-                else round(g["prompt_tokens_sum"] / g["prompt_tokens_n"], 0),
-                "avg_cost_usd": None if not g["total_requests"] else round(g["cost_sum"] / g["total_requests"], 6),
-            }
-        )
-
-    out.sort(key=lambda r: (r["date"], r["model"]), reverse=True)
-
     return {
-        "filters": {"app_id": app_id, "project_id": project_id, "provider": provider, "model": model, "days": days},
-        "source": {"type": "supabase", "table": src.table},
-        "count": len(out),
-        "rows": out,
-        "notes": {"max_rows": max_rows},
+        "filters": {
+            "app_id": app_id,
+            "project_id": project_id,
+            "provider": provider,
+            "model": model,
+            "days": days,
+        },
+        "source": {"type": "supabase", "table": "model_proxy_request_contexts"},
+        "count": 0,
+        "rows": [],
+        "notes": {
+            "max_rows": max_rows,
+            "supported": False,
+            "reason": "Minimal schema does not include rules/code-jit metadata.",
+        },
     }
 
 
@@ -848,7 +920,11 @@ async def top_cost_requests(
     since_days: int = Query(default=7, ge=1, le=MAX_DAYS),
     limit: int = Query(default=50, ge=1, le=MAX_TOP_COST_LIMIT),
 ) -> dict[str, Any]:
-    """Top cost requests to identify optimization targets (based on Query 6)."""
+    """Top requests by tokens_saved (minimal schema).
+
+    The minimal schema does not include cost, so this endpoint is repurposed to rank by
+    `model_proxy_request_contexts.tokens_saved` to help identify best condensation wins.
+    """
     _validate_app_id(app_id)
     _validate_provider(provider)
     _validate_model(model)
@@ -856,86 +932,184 @@ async def top_cost_requests(
         _validate_len("project_id", project_id, 255)
 
     client = _get_client_or_503()
-    src = _detect_source(client)
 
     since_dt = _utc_now() - timedelta(days=int(since_days))
     since_iso = _iso(since_dt)
 
-    cols: list[str] = [
-        src.ts_col,
-        src.model_col,
-        src.provider_col,
-        src.prompt_tokens_col,
-        src.completion_tokens_col,
-        src.total_cost_col,
-        src.duration_ms_col,
-        src.status_code_col,
-        src.message_count_col,
-        src.metadata_col,
-        "prompt_char_count",
-    ]
-
-    if src.request_id_col:
-        cols.append(src.request_id_col)
-    if src.project_id_col:
-        cols.append(src.project_id_col)
-    if src.app_id_col:
-        cols.append(src.app_id_col)
-
-    select_cols = ",".join(dict.fromkeys(cols))
-
+    # 1) Get top contexts by tokens_saved within window.
     try:
-        query = client.table(src.table).select(select_cols)
-        query = _apply_scope_filters(
-            client=client,
-            query=query,
-            src=src,
-            app_id=app_id,
-            project_id=project_id,
-            provider=provider,
-            model=model,
+        ctx_q = (
+            client.table("model_proxy_request_contexts")
+            .select(
+                ",".join(
+                    [
+                        "request_id",
+                        "raw_context_token_count",
+                        "condensed_context_token_count",
+                        "tokens_saved",
+                        "created_at",
+                    ]
+                )
+            )
+            .gte("created_at", since_iso)
+            .order("tokens_saved", desc=True)
+            .limit(int(limit) * 5)
         )
-        query = query.gte(src.ts_col, since_iso).order(src.total_cost_col, desc=True).limit(int(limit))
-        resp = query.execute()
+        ctx_resp = ctx_q.execute()
     except httpx.HTTPError as exc:
-        raise HTTPException(status_code=503, detail="Supabase is unreachable (top cost requests).") from exc
+        raise HTTPException(
+            status_code=503, detail="Supabase is unreachable (top requests)."
+        ) from exc
     except Exception as exc:  # noqa: BLE001
-        raise HTTPException(status_code=500, detail=f"Failed to query {src.table} top-cost: {exc}") from exc
+        raise HTTPException(
+            status_code=500, detail=f"Failed to query model_proxy_request_contexts (top): {exc}"
+        ) from exc
 
-    data = getattr(resp, "data", None)
-    if not isinstance(data, list):
-        raise HTTPException(status_code=500, detail=f"Unexpected response from Supabase ({src.table})")
+    ctx_data = getattr(ctx_resp, "data", None)
+    if not isinstance(ctx_data, list):
+        raise HTTPException(
+            status_code=500,
+            detail="Unexpected response from Supabase (model_proxy_request_contexts)",
+        )
+
+    ctx_rows: list[dict[str, Any]] = [r for r in ctx_data if isinstance(r, dict)]
+    ctx_request_ids = [
+        str(r.get("request_id")).strip()
+        for r in ctx_rows
+        if isinstance(r.get("request_id"), str) and str(r.get("request_id")).strip()
+    ]
+    ctx_request_ids = list(dict.fromkeys(ctx_request_ids))
+    if not ctx_request_ids:
+        return {
+            "filters": {
+                "app_id": app_id,
+                "project_id": project_id,
+                "provider": provider,
+                "model": model,
+                "since_days": since_days,
+            },
+            "source": {"type": "supabase", "table": "model_proxy_request_contexts"},
+            "count": 0,
+            "rows": [],
+            "notes": {"cost_available": False, "ranking": "tokens_saved"},
+        }
+
+    # 2) Join with request headers (apply scope filters here).
+    def _chunks(items: list[str], size: int) -> list[list[str]]:
+        out: list[list[str]] = []
+        for i in range(0, len(items), size):
+            out.append(items[i : i + size])
+        return out
+
+    req_by_id: dict[str, dict[str, Any]] = {}
+    for chunk in _chunks(ctx_request_ids, 200):
+        try:
+            req_q = (
+                client.table("model_proxy_requests")
+                .select(
+                    ",".join(
+                        [
+                            "request_id",
+                            "request_timestamp",
+                            "provider",
+                            "model",
+                            "request_token_count",
+                            "response_token_count",
+                            "latency_ms",
+                            "status_code",
+                            "app_id",
+                        ]
+                    )
+                )
+                .in_("request_id", chunk)
+                .gte("request_timestamp", since_iso)
+            )
+
+            if app_id is not None:
+                req_q = req_q.eq("app_id", app_id)
+            if provider is not None:
+                req_q = req_q.eq("provider", provider)
+            if model is not None:
+                req_q = req_q.eq("model", model)
+
+            req_resp = req_q.execute()
+        except Exception:
+            continue
+
+        req_data = getattr(req_resp, "data", None)
+        if not isinstance(req_data, list):
+            continue
+
+        for r in req_data:
+            if not isinstance(r, dict):
+                continue
+            rid = r.get("request_id")
+            if isinstance(rid, str) and rid.strip():
+                req_by_id[rid.strip()] = r
 
     out: list[dict[str, Any]] = []
-    for r in data:
-        if not isinstance(r, dict):
+    for c in ctx_rows:
+        rid = c.get("request_id")
+        if not isinstance(rid, str) or not rid.strip():
             continue
-        meta = r.get(src.metadata_col)
+        rid = rid.strip()
+        req = req_by_id.get(rid)
+        if req is None:
+            continue
+
+        prompt_tokens = _safe_int(req.get("request_token_count"))
+        completion_tokens = _safe_int(req.get("response_token_count"))
+
         out.append(
             {
-                "request_id": r.get(src.request_id_col or "request_id"),
-                "timestamp": r.get(src.ts_col),
-                "provider": r.get(src.provider_col),
-                "model": r.get(src.model_col),
-                "prompt_tokens": _safe_int(r.get(src.prompt_tokens_col)),
-                "completion_tokens": _safe_int(r.get(src.completion_tokens_col)),
-                "total_cost_usd": round(_safe_float(r.get(src.total_cost_col)), 6),
-                "duration_ms": _safe_int(r.get(src.duration_ms_col)),
-                "status_code": r.get(src.status_code_col),
-                "message_count": r.get(src.message_count_col),
-                "prompt_char_count": r.get("prompt_char_count"),
-                "app_id": r.get(src.app_id_col or "app_id"),
-                "project_id": r.get(src.project_id_col or "project_id"),
-                "rules_injected": _meta_bool(meta, "rules_injected"),
-                "context_condensed": _meta_bool(meta, "context_condensed"),
+                "request_id": rid,
+                "timestamp": req.get("request_timestamp"),
+                "provider": req.get("provider"),
+                "model": req.get("model"),
+                "prompt_tokens": prompt_tokens,
+                "completion_tokens": completion_tokens,
+                "total_cost_usd": None,
+                "duration_ms": _safe_int(req.get("latency_ms")),
+                "status_code": req.get("status_code"),
+                "message_count": None,
+                "prompt_char_count": None,
+                "app_id": req.get("app_id"),
+                "project_id": None,
+                "rules_injected": False,
+                "context_condensed": True,
+                "tokens_saved": _safe_int(c.get("tokens_saved"))
+                if c.get("tokens_saved") is not None
+                else None,
+                "raw_context_token_count": _safe_int(c.get("raw_context_token_count"))
+                if c.get("raw_context_token_count") is not None
+                else None,
+                "condensed_context_token_count": _safe_int(c.get("condensed_context_token_count"))
+                if c.get("condensed_context_token_count") is not None
+                else None,
             }
         )
 
+    out.sort(
+        key=lambda r: (_safe_int(r.get("tokens_saved")), str(r.get("timestamp") or "")),
+        reverse=True,
+    )
+    out = out[: int(limit)]
+
     return {
-        "filters": {"app_id": app_id, "project_id": project_id, "provider": provider, "model": model, "since_days": since_days},
-        "source": {"type": "supabase", "table": src.table},
+        "filters": {
+            "app_id": app_id,
+            "project_id": project_id,
+            "provider": provider,
+            "model": model,
+            "since_days": since_days,
+        },
+        "source": {
+            "type": "supabase",
+            "table": "model_proxy_requests+model_proxy_request_contexts",
+        },
         "count": len(out),
         "rows": out,
+        "notes": {"cost_available": False, "ranking": "tokens_saved"},
     }
 
 
@@ -948,13 +1122,10 @@ async def hourly_usage(
     since_hours: int = Query(default=24 * 7, ge=1, le=MAX_HOURS),
     max_rows: int = Query(default=20_000, ge=100, le=MAX_ROWS_PER_QUERY),
 ) -> dict[str, Any]:
-    """Hourly usage patterns (based on Query 7).
+    """Hourly usage patterns (minimal schema).
 
-    Returns per (hour, model):
-    - request_count
-    - avg_prompt_tokens
-    - total_cost_usd
-    - avg_latency_ms
+    - avg_prompt_tokens is derived from model_proxy_requests.request_token_count
+    - total_cost_usd is null (not in minimal schema)
     """
     _validate_app_id(app_id)
     _validate_provider(provider)
@@ -963,28 +1134,63 @@ async def hourly_usage(
         _validate_len("project_id", project_id, 255)
 
     client = _get_client_or_503()
-    src = _detect_source(client)
 
     since_dt = _utc_now() - timedelta(hours=int(since_hours))
-    rows = _fetch_rows(
-        client=client,
-        src=src,
-        since_dt=since_dt,
-        app_id=app_id,
-        project_id=project_id,
-        provider=provider,
-        model=model,
-        limit=int(max_rows),
-    )
+    since_iso = _iso(since_dt)
+
+    try:
+        q = (
+            client.table("model_proxy_requests")
+            .select(
+                ",".join(
+                    [
+                        "request_timestamp",
+                        "model",
+                        "provider",
+                        "app_id",
+                        "request_token_count",
+                        "latency_ms",
+                    ]
+                )
+            )
+            .gte("request_timestamp", since_iso)
+            .order("request_timestamp", desc=True)
+            .limit(int(max_rows))
+        )
+
+        if app_id is not None:
+            q = q.eq("app_id", app_id)
+        if provider is not None:
+            q = q.eq("provider", provider)
+        if model is not None:
+            q = q.eq("model", model)
+
+        resp = q.execute()
+    except httpx.HTTPError as exc:
+        raise HTTPException(
+            status_code=503, detail="Supabase is unreachable (hourly context metrics)."
+        ) from exc
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(
+            status_code=500, detail=f"Failed to query model_proxy_requests (hourly): {exc}"
+        ) from exc
+
+    data = getattr(resp, "data", None)
+    if not isinstance(data, list):
+        raise HTTPException(
+            status_code=500, detail="Unexpected response from Supabase (model_proxy_requests)"
+        )
+
+    rows: list[dict[str, Any]] = [r for r in data if isinstance(r, dict)]
 
     groups: dict[tuple[str, str], dict[str, Any]] = {}
 
     for r in rows:
-        ts = _parse_ts(r.get(src.ts_col))
+        ts = _parse_ts(r.get("request_timestamp"))
         if ts is None:
             continue
         hour = ts.replace(minute=0, second=0, microsecond=0).isoformat()
-        m = str(r.get(src.model_col) or "unknown")
+        m = str(r.get("model") or "unknown")
         key = (hour, m)
 
         g = groups.get(key)
@@ -995,18 +1201,16 @@ async def hourly_usage(
                 "request_count": 0,
                 "prompt_tokens_sum": 0,
                 "prompt_tokens_n": 0,
-                "cost_sum": 0.0,
                 "latency_sum": 0,
                 "latency_n": 0,
             }
             groups[key] = g
 
         g["request_count"] += 1
-        g["prompt_tokens_sum"] += _safe_int(r.get(src.prompt_tokens_col))
+        g["prompt_tokens_sum"] += _safe_int(r.get("request_token_count"))
         g["prompt_tokens_n"] += 1
-        g["cost_sum"] += _safe_float(r.get(src.total_cost_col))
 
-        lat = r.get(src.duration_ms_col)
+        lat = r.get("latency_ms")
         if isinstance(lat, (int, float)) and lat is not None:
             g["latency_sum"] += int(lat)
             g["latency_n"] += 1
@@ -1021,19 +1225,27 @@ async def hourly_usage(
                 "avg_prompt_tokens": None
                 if not g["prompt_tokens_n"]
                 else round(g["prompt_tokens_sum"] / g["prompt_tokens_n"], 0),
-                "total_cost_usd": round(g["cost_sum"], 4),
-                "avg_latency_ms": None if not g["latency_n"] else round(g["latency_sum"] / g["latency_n"], 0),
+                "total_cost_usd": None,
+                "avg_latency_ms": None
+                if not g["latency_n"]
+                else round(g["latency_sum"] / g["latency_n"], 0),
             }
         )
 
     out.sort(key=lambda r: (r["hour"], r["model"]), reverse=True)
 
     return {
-        "filters": {"app_id": app_id, "project_id": project_id, "provider": provider, "model": model, "since_hours": since_hours},
-        "source": {"type": "supabase", "table": src.table},
+        "filters": {
+            "app_id": app_id,
+            "project_id": project_id,
+            "provider": provider,
+            "model": model,
+            "since_hours": since_hours,
+        },
+        "source": {"type": "supabase", "table": "model_proxy_requests"},
         "count": len(out),
         "rows": out,
-        "notes": {"max_rows": max_rows},
+        "notes": {"max_rows": max_rows, "cost_available": False},
     }
 
 
@@ -1046,7 +1258,7 @@ async def error_rate(
     days: int = Query(default=30, ge=1, le=MAX_DAYS),
     max_rows: int = Query(default=20_000, ge=100, le=MAX_ROWS_PER_QUERY),
 ) -> dict[str, Any]:
-    """Error rate monitoring (based on Query 9)."""
+    """Error rate monitoring (minimal schema)."""
     _validate_app_id(app_id)
     _validate_provider(provider)
     _validate_model(model)
@@ -1054,24 +1266,48 @@ async def error_rate(
         _validate_len("project_id", project_id, 255)
 
     client = _get_client_or_503()
-    src = _detect_source(client)
 
     since_dt = _utc_now() - timedelta(days=int(days))
-    rows = _fetch_rows(
-        client=client,
-        src=src,
-        since_dt=since_dt,
-        app_id=app_id,
-        project_id=project_id,
-        provider=provider,
-        model=model,
-        limit=int(max_rows),
-    )
+    since_iso = _iso(since_dt)
+
+    try:
+        q = (
+            client.table("model_proxy_requests")
+            .select("request_timestamp,model,provider,app_id,status_code,latency_ms")
+            .gte("request_timestamp", since_iso)
+            .order("request_timestamp", desc=True)
+            .limit(int(max_rows))
+        )
+
+        if app_id is not None:
+            q = q.eq("app_id", app_id)
+        if provider is not None:
+            q = q.eq("provider", provider)
+        if model is not None:
+            q = q.eq("model", model)
+
+        resp = q.execute()
+    except httpx.HTTPError as exc:
+        raise HTTPException(
+            status_code=503, detail="Supabase is unreachable (error-rate context metrics)."
+        ) from exc
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(
+            status_code=500, detail=f"Failed to query model_proxy_requests (errors): {exc}"
+        ) from exc
+
+    data = getattr(resp, "data", None)
+    if not isinstance(data, list):
+        raise HTTPException(
+            status_code=500, detail="Unexpected response from Supabase (model_proxy_requests)"
+        )
+
+    rows: list[dict[str, Any]] = [r for r in data if isinstance(r, dict)]
 
     groups: dict[str, dict[str, Any]] = {}
 
     for r in rows:
-        ts = _parse_ts(r.get(src.ts_col))
+        ts = _parse_ts(r.get("request_timestamp"))
         if ts is None:
             continue
         d = _date_key(ts)
@@ -1091,7 +1327,7 @@ async def error_rate(
 
         g["total_requests"] += 1
 
-        status = r.get(src.status_code_col)
+        status = r.get("status_code")
         status_i = int(status) if isinstance(status, (int, float)) else None
         if status_i is not None and status_i >= 400:
             g["error_count"] += 1
@@ -1102,7 +1338,7 @@ async def error_rate(
             if status_i >= 500:
                 g["server_errors"] += 1
 
-        lat = r.get(src.duration_ms_col)
+        lat = r.get("latency_ms")
         if isinstance(lat, (int, float)) and lat is not None:
             g["latency_sum"] += int(lat)
             g["latency_n"] += 1
@@ -1121,16 +1357,399 @@ async def error_rate(
                 "bad_request_errors": g["bad_request_errors"],
                 "rate_limit_errors": g["rate_limit_errors"],
                 "server_errors": g["server_errors"],
-                "avg_latency_ms": None if not g["latency_n"] else round(g["latency_sum"] / g["latency_n"], 0),
+                "avg_latency_ms": None
+                if not g["latency_n"]
+                else round(g["latency_sum"] / g["latency_n"], 0),
             }
         )
 
     out.sort(key=lambda r: r["date"], reverse=True)
 
     return {
-        "filters": {"app_id": app_id, "project_id": project_id, "provider": provider, "model": model, "days": days},
-        "source": {"type": "supabase", "table": src.table},
+        "filters": {
+            "app_id": app_id,
+            "project_id": project_id,
+            "provider": provider,
+            "model": model,
+            "days": days,
+        },
+        "source": {"type": "supabase", "table": "model_proxy_requests"},
         "count": len(out),
         "rows": out,
         "notes": {"max_rows": max_rows},
+    }
+
+
+def _validate_request_id(request_id: str | None) -> str:
+    if request_id is None:
+        raise HTTPException(status_code=400, detail="request_id is required")
+    rid = request_id.strip()
+    if not rid:
+        raise HTTPException(status_code=400, detail="request_id is required")
+    if len(rid) > 200:
+        raise HTTPException(status_code=400, detail="request_id too long")
+    # Support both UUIDs and opaque req_* ids; keep it permissive but safe.
+    if re.fullmatch(r"[A-Za-z0-9_.:-]+", rid) is None:
+        raise HTTPException(status_code=400, detail="Invalid characters in request_id")
+    return rid
+
+
+def _pick_first_available_object(client: Any, candidates: list[str]) -> str | None:
+    for name in candidates:
+        try:
+            client.table(name).select("id").limit(1).execute()
+            return name
+        except Exception:
+            continue
+    return None
+
+
+def _request_id_to_uuid_or_none(request_id: str) -> str | None:
+    rid = request_id.strip()
+    if re.fullmatch(
+        r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}", rid
+    ):
+        return rid.lower()
+    return None
+
+
+@router.get("/request/lookup")
+async def request_lookup(
+    q: str | None = Query(default=None, description="Search by request_id substring"),
+    app_id: str | None = Query(default=None),
+    project_id: str | None = Query(default=None),
+    provider: str | None = Query(default=None),
+    model: str | None = Query(default=None),
+    since_days: int = Query(default=7, ge=1, le=MAX_DAYS),
+    limit: int = Query(default=50, ge=1, le=MAX_REQUEST_LOOKUP_LIMIT),
+) -> dict[str, Any]:
+    """Lookup recent request contexts for drill-down (minimal schema).
+
+    Returns rows built from:
+    - public.model_proxy_request_contexts (token counts + raw/condensed contexts)
+    - public.model_proxy_requests (timestamp/provider/model/app_id/status/latency)
+
+    The UI uses this as the table you can click to expand raw vs condensed context.
+    """
+    _validate_app_id(app_id)
+    _validate_provider(provider)
+    _validate_model(model)
+    if project_id is not None:
+        # minimal schema doesn't have project_id; keep param for API stability
+        _validate_len("project_id", project_id, 255)
+    if q is not None:
+        _validate_len("q", q, 200)
+
+    client = _get_client_or_503()
+
+    since_dt = _utc_now() - timedelta(days=int(since_days))
+    since_iso = _iso(since_dt)
+
+    # Step 1: fetch candidate context rows by time and request_id substring.
+    try:
+        ctx_q = (
+            client.table("model_proxy_request_contexts")
+            .select(
+                ",".join(
+                    [
+                        "id",
+                        "request_id",
+                        "raw_context_token_count",
+                        "condensed_context_token_count",
+                        "tokens_saved",
+                        "raw_context_chars",
+                        "condensed_context_chars",
+                        "condensation_method",
+                        "condensation_version",
+                        "condensation_trigger",
+                        "created_at",
+                    ]
+                )
+            )
+            .gte("created_at", since_iso)
+            .order("created_at", desc=True)
+            .limit(int(limit) * 5)
+        )
+
+        if q is not None and q.strip():
+            ctx_q = ctx_q.ilike("request_id", f"%{q.strip()}%")
+
+        ctx_resp = ctx_q.execute()
+    except httpx.HTTPError as exc:
+        raise HTTPException(
+            status_code=503, detail="Supabase is unreachable (request lookup)."
+        ) from exc
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(
+            status_code=500, detail=f"Failed to query model_proxy_request_contexts: {exc}"
+        ) from exc
+
+    ctx_data = getattr(ctx_resp, "data", None)
+    if not isinstance(ctx_data, list):
+        raise HTTPException(
+            status_code=500,
+            detail="Unexpected response from Supabase (model_proxy_request_contexts)",
+        )
+
+    ctx_rows: list[dict[str, Any]] = [r for r in ctx_data if isinstance(r, dict)]
+    ctx_request_ids = [
+        str(r.get("request_id")).strip()
+        for r in ctx_rows
+        if isinstance(r.get("request_id"), str) and str(r.get("request_id")).strip()
+    ]
+    ctx_request_ids = list(dict.fromkeys(ctx_request_ids))
+
+    if not ctx_request_ids:
+        return {
+            "filters": {
+                "q": q,
+                "app_id": app_id,
+                "project_id": project_id,
+                "provider": provider,
+                "model": model,
+                "since_days": since_days,
+                "limit": limit,
+            },
+            "source": {"type": "supabase", "table": "model_proxy_request_contexts"},
+            "count": 0,
+            "rows": [],
+        }
+
+    # Step 2: fetch matching request headers for those request_ids (apply filters here).
+    # Chunk to avoid large IN() payloads.
+    def _chunks(items: list[str], size: int) -> list[list[str]]:
+        out: list[list[str]] = []
+        for i in range(0, len(items), size):
+            out.append(items[i : i + size])
+        return out
+
+    req_by_id: dict[str, dict[str, Any]] = {}
+    for chunk in _chunks(ctx_request_ids, 200):
+        try:
+            req_q = (
+                client.table("model_proxy_requests")
+                .select(
+                    ",".join(
+                        [
+                            "request_id",
+                            "request_timestamp",
+                            "provider",
+                            "model",
+                            "status_code",
+                            "latency_ms",
+                            "app_id",
+                            "request_token_count",
+                            "response_token_count",
+                        ]
+                    )
+                )
+                .in_("request_id", chunk)
+                .gte("request_timestamp", since_iso)
+            )
+
+            if app_id is not None:
+                req_q = req_q.eq("app_id", app_id)
+            if provider is not None:
+                req_q = req_q.eq("provider", provider)
+            if model is not None:
+                req_q = req_q.eq("model", model)
+
+            req_resp = req_q.execute()
+        except Exception:
+            continue
+
+        req_data = getattr(req_resp, "data", None)
+        if not isinstance(req_data, list):
+            continue
+
+        for r in req_data:
+            if not isinstance(r, dict):
+                continue
+            rid = r.get("request_id")
+            if isinstance(rid, str) and rid.strip():
+                req_by_id[rid.strip()] = r
+
+    # Build final rows (only keep contexts whose request header survived filters).
+    out_rows: list[dict[str, Any]] = []
+    for c in ctx_rows:
+        rid = c.get("request_id")
+        if not isinstance(rid, str) or not rid.strip():
+            continue
+        rid = rid.strip()
+        req = req_by_id.get(rid)
+        if req is None:
+            continue
+
+        out_rows.append(
+            {
+                "schema": "model_proxy_minimal",
+                "context_id": c.get("id"),
+                "request_id": rid,
+                "timestamp": req.get("request_timestamp"),
+                "provider": req.get("provider"),
+                "model": req.get("model"),
+                "status_code": req.get("status_code"),
+                "latency_ms": req.get("latency_ms"),
+                "app_id": req.get("app_id"),
+                "request_token_count": _safe_int(req.get("request_token_count")),
+                "response_token_count": _safe_int(req.get("response_token_count")),
+                "raw_context_token_count": _safe_int(c.get("raw_context_token_count"))
+                if c.get("raw_context_token_count") is not None
+                else None,
+                "condensed_context_token_count": _safe_int(c.get("condensed_context_token_count"))
+                if c.get("condensed_context_token_count") is not None
+                else None,
+                "tokens_saved": _safe_int(c.get("tokens_saved"))
+                if c.get("tokens_saved") is not None
+                else None,
+                "raw_context_chars": _safe_int(c.get("raw_context_chars"))
+                if c.get("raw_context_chars") is not None
+                else None,
+                "condensed_context_chars": _safe_int(c.get("condensed_context_chars"))
+                if c.get("condensed_context_chars") is not None
+                else None,
+                "condensation_method": c.get("condensation_method"),
+                "condensation_version": c.get("condensation_version"),
+                "condensation_trigger": c.get("condensation_trigger"),
+            }
+        )
+
+    out_rows.sort(key=lambda r: (r.get("timestamp") or ""), reverse=True)
+    out_rows = out_rows[: int(limit)]
+
+    return {
+        "filters": {
+            "q": q,
+            "app_id": app_id,
+            "project_id": project_id,
+            "provider": provider,
+            "model": model,
+            "since_days": since_days,
+            "limit": limit,
+        },
+        "source": {
+            "type": "supabase",
+            "table": "model_proxy_requests+model_proxy_request_contexts",
+        },
+        "count": len(out_rows),
+        "rows": out_rows,
+    }
+
+
+@router.get("/request/details")
+async def request_details(
+    request_id: str | None = Query(default=None),
+    context_id: str | None = Query(
+        default=None,
+        description="Optional model_proxy_request_contexts.id to select an exact context row",
+    ),
+    include_payloads: bool = Query(default=True),
+    include_messages: bool = Query(default=True),
+    include_tools: bool = Query(default=True),
+    include_tool_executions: bool = Query(default=True),
+    max_child_rows: int = Query(default=500, ge=1, le=MAX_REQUEST_CHILD_ROWS),
+) -> dict[str, Any]:
+    """Fetch minimal request + context details for a single request_id.
+
+    Minimal schema sources:
+    - public.model_proxy_requests
+    - public.model_proxy_request_contexts
+
+    If context_id is provided, the API will try to fetch that exact context row. This enables
+    deterministic UI expansion even if multiple context rows exist for the same request_id.
+
+    The include_* params are kept for backward compatibility but are ignored (no child tables).
+    """
+    rid = _validate_request_id(request_id)
+    if context_id is not None:
+        _validate_len("context_id", context_id, 200)
+        cid = context_id.strip()
+        if not cid:
+            context_id = None
+        elif re.fullmatch(
+            r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}",
+            cid,
+        ) is None:
+            raise HTTPException(status_code=400, detail="context_id must be a UUID")
+        else:
+            context_id = cid.lower()
+
+    client = _get_client_or_503()
+
+    # ---- request row ----
+    try:
+        req_resp = (
+            client.table("model_proxy_requests")
+            .select("*")
+            .eq("request_id", rid)
+            .limit(1)
+            .execute()
+        )
+    except httpx.HTTPError as exc:
+        raise HTTPException(
+            status_code=503, detail="Supabase is unreachable (request details)."
+        ) from exc
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(
+            status_code=500, detail=f"Failed to query model_proxy_requests: {exc}"
+        ) from exc
+
+    req_data = getattr(req_resp, "data", None)
+    request_row = (
+        req_data[0]
+        if isinstance(req_data, list) and req_data and isinstance(req_data[0], dict)
+        else None
+    )
+    if request_row is None:
+        raise HTTPException(status_code=404, detail="request_id not found")
+
+    # ---- request context row ----
+    request_context_row: dict[str, Any] | None = None
+    try:
+        if context_id is not None:
+            ctx_resp = (
+                client.table("model_proxy_request_contexts")
+                .select("*")
+                .eq("id", context_id)
+                .limit(1)
+                .execute()
+            )
+        else:
+            ctx_resp = (
+                client.table("model_proxy_request_contexts")
+                .select("*")
+                .eq("request_id", rid)
+                .order("created_at", desc=True)
+                .limit(1)
+                .execute()
+            )
+
+        ctx_data = getattr(ctx_resp, "data", None)
+        if isinstance(ctx_data, list) and ctx_data and isinstance(ctx_data[0], dict):
+            row0 = ctx_data[0]
+            # Safety: if a context_id was provided, ensure it belongs to this request_id.
+            if context_id is None or row0.get("request_id") == rid:
+                request_context_row = row0
+    except Exception:
+        request_context_row = None
+
+    return {
+        "request_id": rid,
+        "schema": "model_proxy_minimal",
+        "request": request_row,
+        "request_context": request_context_row,
+        "children": {
+            # Kept for compatibility with older clients; always empty in minimal schema.
+            "payloads": [],
+            "messages": [],
+            "tools": [],
+            "tool_executions": [],
+        },
+        "notes": {
+            "payloads_available": False,
+            "messages_available": False,
+            "tools_available": False,
+            "tool_executions_available": False,
+            "context_id": context_id,
+        },
     }

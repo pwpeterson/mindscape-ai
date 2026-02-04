@@ -24,8 +24,17 @@ from typing import Any
 import aiosqlite
 from fastapi import APIRouter, HTTPException, Query
 
-from mindscape_ai.apps.registry import AppRegistryError, discover_apps, normalize_app_roots, read_app_id_from_pyproject
-from mindscape_ai.apps.supabase_store import AppStoreError, SupabaseUnavailableError, resolve_conport_db_path_from_supabase
+from mindscape_ai.apps.registry import (
+    AppRegistryError,
+    discover_apps,
+    normalize_app_roots,
+    read_app_id_from_pyproject,
+)
+from mindscape_ai.apps.supabase_store import (
+    AppStoreError,
+    SupabaseUnavailableError,
+    resolve_conport_db_path_from_supabase,
+)
 from mindscape_ai.conport.db import ConPortDbPathError, find_workspace_root, resolve_conport_db_path
 from mindscape_ai.mem0.client import Mem0Settings, Mem0UnavailableError, get_mem0_client
 from mindscape_ai.prompts.fs import PromptsFsError, iter_prompt_files, resolve_prompt_dirs

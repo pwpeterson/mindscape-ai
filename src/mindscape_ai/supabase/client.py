@@ -60,7 +60,7 @@ class SupabaseSettings:
     service_role_key: str
 
     @staticmethod
-    def from_env() -> "SupabaseSettings":
+    def from_env() -> SupabaseSettings:
         url = _first_env(*SUPABASE_URL_ENV_KEYS)
         key = _first_env(*SUPABASE_SERVICE_KEY_ENV_KEYS)
 

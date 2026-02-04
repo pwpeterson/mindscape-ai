@@ -20,9 +20,10 @@ from __future__ import annotations
 
 import os
 import sqlite3
+from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any
 
 from mindscape_ai.apps.path_mapping import map_runtime_path
 from mindscape_ai.apps.supabase_store import AppStoreError, MindscapeApp

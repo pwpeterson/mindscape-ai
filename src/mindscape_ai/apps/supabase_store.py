@@ -118,7 +118,7 @@ def _find_conport_db_for_root(root_path: Path) -> Path | None:
     """Find an existing ConPort DB for a *runtime-visible* app root."""
     candidates = _candidate_conport_db_paths(root_path)
     logger.debug(f"[ConPort DB Search] Root: {root_path}, Candidates: {[str(c) for c in candidates]}")
-    
+
     for candidate in candidates:
         exists = candidate.exists()
         is_file = candidate.is_file() if exists else False
@@ -126,7 +126,7 @@ def _find_conport_db_for_root(root_path: Path) -> Path | None:
         if exists and is_file:
             logger.info(f"[ConPort DB Found] {candidate}")
             return candidate
-    
+
     logger.warning(f"[ConPort DB Not Found] No valid DB found for root: {root_path}")
     return None
 
@@ -278,7 +278,7 @@ def resolve_conport_db_path_from_supabase(app_id: str) -> Path:
 
     stored_root = Path(root_raw).expanduser()
     logger.info(f"[Supabase Resolve] Stored root_path: {stored_root}")
-    
+
     runtime_root = _runtime_root(stored_root)
     logger.info(f"[Supabase Resolve] Runtime root_path: {runtime_root}")
 
@@ -290,7 +290,7 @@ def resolve_conport_db_path_from_supabase(app_id: str) -> Path:
     if db_path.suffix.lower() != ".db":
         logger.error(f"[Supabase Resolve] Invalid DB suffix for {db_path}")
         raise AppStoreError("Resolved ConPort DB must end with '.db'.")
-    
+
     logger.info(f"[Supabase Resolve] Successfully resolved app_id={app_id} to {db_path}")
     return db_path
 

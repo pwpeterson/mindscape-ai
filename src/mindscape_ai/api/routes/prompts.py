@@ -15,11 +15,11 @@ Notes:
 from __future__ import annotations
 
 import asyncio
+import re
 from collections.abc import AsyncGenerator, Awaitable
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-import re
 from typing import Any, Protocol
 
 from fastapi import APIRouter, HTTPException, Query, Request
@@ -33,7 +33,6 @@ from mindscape_ai.prompts.fs import (
     resolve_prompt_dirs,
 )
 from mindscape_ai.prompts.stats import compute_file_stats
-
 
 router = APIRouter(prefix="/prompts", tags=["prompts"])
 

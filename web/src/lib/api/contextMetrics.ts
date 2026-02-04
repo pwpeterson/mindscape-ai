@@ -11,6 +11,86 @@ export type ContextMetricsSource = {
     table: string;
 };
 
+export type ContextMetricsRequestLookupRow = {
+    schema: "model_proxy_api_requests" | "model_proxy_requests" | "model_proxy_minimal";
+    request_id: string;
+
+    // Minimal schema: unique id of the context row (useful for rendering keyed lists)
+    context_id?: string | null;
+
+    timestamp: string | null;
+    provider: string | null;
+    model: string | null;
+
+    // Legacy schemas
+    prompt_tokens?: number;
+    completion_tokens?: number;
+    total_tokens?: number;
+
+    // Minimal schema (request token counts)
+    request_token_count?: number;
+    response_token_count?: number;
+
+    // Minimal schema (context token counts)
+    raw_context_token_count?: number | null;
+    condensed_context_token_count?: number | null;
+    tokens_saved?: number | null;
+
+    // Minimal schema (context size)
+    raw_context_chars?: number | null;
+    condensed_context_chars?: number | null;
+
+    // Minimal schema (condensation metadata)
+    condensation_method?: string | null;
+    condensation_version?: string | null;
+    condensation_trigger?: string | null;
+
+    // Cost not available in minimal schema
+    total_cost_usd: number | null;
+
+    duration_ms: number;
+    status_code: number | null;
+    app_id: string | number | null;
+
+    // Not available in minimal schema
+    project_id: string | null;
+    route: string | null;
+    message_count: number | null;
+
+    /**
+     * Optional fields (may not be present depending on backend schema/source).
+     * Kept optional to avoid breaking older API responses.
+     */
+    inserted_at?: string | null;
+};
+
+export type ContextMetricsRequestLookupResponse = {
+    filters: Record<string, unknown>;
+    source: ContextMetricsSource;
+    count: number;
+    rows: ContextMetricsRequestLookupRow[];
+};
+
+export type ContextMetricsRequestDetailsResponse = {
+    request_id: string;
+    schema: "model_proxy_api_requests" | "model_proxy_requests" | "model_proxy_minimal";
+    request: Record<string, unknown>;
+
+    /**
+     * Minimal schema: the row from model_proxy_request_contexts (may be null if not present).
+     * Contains raw_request_context + condensed_request_context and token counts.
+     */
+    request_context?: Record<string, unknown> | null;
+
+    children: {
+        payloads?: unknown[];
+        messages?: unknown[];
+        tools?: unknown[];
+        tool_executions?: unknown[];
+    };
+    notes?: Record<string, unknown>;
+};
+
 export type ContextMetricsRoiStats = {
     total_requests: number;
     condensed_requests: number;
@@ -19,7 +99,10 @@ export type ContextMetricsRoiStats = {
     avg_tokens_not_condensed: number | null;
     avg_tokens_saved_per_request: number | null;
     token_reduction_pct: number | null;
-    total_cost_usd: number;
+
+    // Minimal schema does not include cost
+    total_cost_usd: number | null;
+
     estimated_savings_usd: number | null;
 };
 
@@ -41,8 +124,9 @@ export type ContextMetricsDailyRow = {
 
     avg_completion_tokens: number | null;
 
+    // Minimal schema does not include cost
     avg_cost_usd: number | null;
-    total_cost_usd: number;
+    total_cost_usd: number | null;
 };
 
 export type ContextMetricsDailyResponse = {
@@ -88,7 +172,9 @@ export type ContextMetricsTopCostRow = {
 
     prompt_tokens: number;
     completion_tokens: number;
-    total_cost_usd: number;
+
+    // Minimal schema does not include cost
+    total_cost_usd: number | null;
 
     duration_ms: number;
     status_code: number | null;
@@ -100,6 +186,11 @@ export type ContextMetricsTopCostRow = {
 
     rules_injected: boolean;
     context_condensed: boolean;
+
+    // Minimal schema (top requests ranked by tokens_saved)
+    tokens_saved?: number | null;
+    raw_context_token_count?: number | null;
+    condensed_context_token_count?: number | null;
 };
 
 export type ContextMetricsTopCostResponse = {
@@ -114,7 +205,7 @@ export type ContextMetricsHourlyRow = {
     model: string;
     request_count: number;
     avg_prompt_tokens: number | null;
-    total_cost_usd: number;
+    total_cost_usd: number | null;
     avg_latency_ms: number | null;
 };
 
@@ -353,6 +444,70 @@ export async function contextMetricsErrors(
             model: params.model ?? null,
             days: params.days != null ? String(params.days) : null,
             max_rows: params.max_rows != null ? String(params.max_rows) : null,
+        }),
+    );
+}
+
+export async function contextMetricsRequestLookup(
+    fetchFn: FetchLike,
+    params: {
+        q?: string | null;
+        app_id?: string | null;
+        project_id?: string | null;
+        provider?: string | null;
+        model?: string | null;
+        since_days?: number | null;
+        limit?: number | null;
+    } = {},
+): Promise<ContextMetricsRequestLookupResponse> {
+    return getJson(
+        fetchFn,
+        buildUrl("/api/v1/context-metrics/request/lookup", {
+            q: params.q ?? null,
+            app_id: params.app_id ?? null,
+            project_id: params.project_id ?? null,
+            provider: params.provider ?? null,
+            model: params.model ?? null,
+            since_days: params.since_days != null ? String(params.since_days) : null,
+            limit: params.limit != null ? String(params.limit) : null,
+        }),
+    );
+}
+
+export async function contextMetricsRequestDetails(
+    fetchFn: FetchLike,
+    params: {
+        request_id: string;
+
+        /**
+         * Optional model_proxy_request_contexts.id (UUID). If provided, backend will fetch that
+         * exact context row for deterministic comparisons.
+         */
+        context_id?: string | null;
+
+        include_payloads?: boolean | null;
+        include_messages?: boolean | null;
+        include_tools?: boolean | null;
+        include_tool_executions?: boolean | null;
+        max_child_rows?: number | null;
+    },
+): Promise<ContextMetricsRequestDetailsResponse> {
+    return getJson(
+        fetchFn,
+        buildUrl("/api/v1/context-metrics/request/details", {
+            request_id: params.request_id,
+            context_id: params.context_id ?? null,
+            include_payloads:
+                params.include_payloads != null ? String(params.include_payloads) : null,
+            include_messages:
+                params.include_messages != null ? String(params.include_messages) : null,
+            include_tools: params.include_tools != null ? String(params.include_tools) : null,
+            include_tool_executions:
+                params.include_tool_executions != null
+                    ? String(params.include_tool_executions)
+                    : null,
+            max_child_rows:
+                params.max_child_rows != null ? String(params.max_child_rows) : null,
         }),
     );
 }

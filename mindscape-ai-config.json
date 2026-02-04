@@ -11,7 +11,7 @@
                 "mindscape_ai.mcp_server"
             ],
             "env": {
-                "MINDSCAPE_MCP_APP_ID": "${workspaceFolderBasename}",
+                "MINDSCAPE_MCP_APP_ID": "mindscape-ai",
                 "MINDSCAPE_MCP_DB": "context_portal/context.db",
                 "MINDSCAPE_MCP_USER_ID": "default",
                 "MINDSCAPE_MCP_PROJECT_ID": "",
