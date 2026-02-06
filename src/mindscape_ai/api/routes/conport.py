@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 import aiosqlite
-from fastapi import APIRouter, Body, HTTPException, Query
+from fastapi import APIRouter, Body, HTTPException, Query, Request
 from loguru import logger
 
 from mindscape_ai.apps.registry import (
@@ -543,6 +543,7 @@ async def conport_system_patterns(
 
 @router.get("/progress")
 async def conport_progress_list(
+    request: Request,
     status: str | None = Query(default=None),
     parent_id: int | None = Query(default=None, ge=1),
     description_prefix: str | None = Query(default=None, min_length=1, max_length=200),
@@ -569,6 +570,7 @@ async def conport_progress_list(
         if parent_id is not None:
             where.append("parent_id = ?")
             params.append(parent_id)
+        # Note: if parent_id is None or empty, we don't filter - return all entries
 
         if description_prefix is not None:
             prefix = description_prefix.strip()

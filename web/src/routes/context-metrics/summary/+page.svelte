@@ -210,6 +210,23 @@
         return typeof v === "string" ? v : null;
     }
 
+    function prettyJsonOrText(v: string | null): string | null {
+        if (v == null) return null;
+        const s = v.trim();
+        if (!s) return v;
+
+        // Only attempt JSON pretty-print for likely JSON payloads.
+        const first = s[0];
+        if (first !== "{" && first !== "[") return v;
+
+        try {
+            return JSON.stringify(JSON.parse(s), null, 2);
+        } catch {
+            // If it's not valid JSON, fall back to raw text.
+            return v;
+        }
+    }
+
     function getRequestContextNumber(
         details: ContextMetricsRequestDetailsResponse | null,
         key: string,
@@ -605,9 +622,11 @@
                                                     Raw request context
                                                 </div>
                                                 <pre
-                                                    class="mt-2 max-h-[420px] overflow-auto rounded bg-black/30 p-2 text-[11px] text-gray-200">{getRequestContextField(
-                                                        requestDetails,
-                                                        "raw_request_context",
+                                                    class="mt-2 max-h-[420px] overflow-auto rounded bg-black/30 p-2 text-[11px] text-gray-200">{prettyJsonOrText(
+                                                        getRequestContextField(
+                                                            requestDetails,
+                                                            "raw_request_context",
+                                                        ),
                                                     ) ?? "—"}</pre>
                                             </div>
 
@@ -620,9 +639,11 @@
                                                     Condensed request context
                                                 </div>
                                                 <pre
-                                                    class="mt-2 max-h-[420px] overflow-auto rounded bg-black/30 p-2 text-[11px] text-gray-200">{getRequestContextField(
-                                                        requestDetails,
-                                                        "condensed_request_context",
+                                                    class="mt-2 max-h-[420px] overflow-auto rounded bg-black/30 p-2 text-[11px] text-gray-200">{prettyJsonOrText(
+                                                        getRequestContextField(
+                                                            requestDetails,
+                                                            "condensed_request_context",
+                                                        ),
                                                     ) ?? "—"}</pre>
                                             </div>
                                         </div>

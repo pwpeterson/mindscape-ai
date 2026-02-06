@@ -1,0 +1,33 @@
+{
+    "version": "1.0",
+    "entity_types": [
+        "project",
+        "phase",
+        "task"
+    ],
+    "required_fields": [
+        "entity_type",
+        "title"
+    ],
+    "optional_fields": [
+        "owner",
+        "priority",
+        "tags",
+        "estimate_points",
+        "due_date",
+        "order",
+        "external_refs"
+    ],
+    "allowed_statuses": [
+        "TODO",
+        "IN_PROGRESS",
+        "DONE"
+    ],
+    "priority_values": [
+        "P0",
+        "P1",
+        "P2",
+        "P3"
+    ],
+    "notes": "One app per workspace. Use progress_entries for hierarchy (parent_id). Store metadata in custom_data category 'wbs_meta' keyed by 'progress:<ID>'."
+}

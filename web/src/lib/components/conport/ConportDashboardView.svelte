@@ -348,11 +348,13 @@
             ]);
 
             data = dash;
-            treeEntries = enrichEntriesWithWbs(
-                (list as ConportProgressListResponse).progress_entries,
-            );
+            const initialEntries = (list as ConportProgressListResponse)
+                .progress_entries;
+
+            treeEntries = enrichEntriesWithWbs(initialEntries);
 
             // Backfill phase entries
+
             const [phaseBackfill, phaseBackfillPrioritized] = await Promise.all(
                 [
                     conportProgressList(fetch, {
@@ -448,6 +450,9 @@
                     "i",
                 );
                 const attachedNotes = rootNotes.map((n) => {
+                    // Don't modify the phase entry itself - only attach notes TO the phase
+                    if (n.id === phaseId)
+                        return { ...n, wbs_meta: wbsMetaMap.get(n.id) };
                     if (n.parent_id == null && re.test(n.description)) {
                         return {
                             ...n,
