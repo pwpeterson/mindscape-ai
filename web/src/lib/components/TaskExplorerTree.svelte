@@ -20,7 +20,8 @@
 	}
 
 	function statusColor(status: string): string {
-		switch (status) {
+		const normalized = status.toUpperCase();
+		switch (normalized) {
 			case "IN_PROGRESS":
 				return "bg-emerald-400";
 			case "DONE":
@@ -46,7 +47,8 @@
 	}
 
 	function phaseMarker(status: string): string {
-		switch (status) {
+		const normalized = status.toUpperCase();
+		switch (normalized) {
 			case "IN_PROGRESS":
 				return "🟩";
 			case "DONE":
@@ -58,7 +60,8 @@
 	}
 
 	function phaseMarkerLabel(status: string): string {
-		switch (status) {
+		const normalized = status.toUpperCase();
+		switch (normalized) {
 			case "IN_PROGRESS":
 				return "Phase (In progress)";
 			case "DONE":

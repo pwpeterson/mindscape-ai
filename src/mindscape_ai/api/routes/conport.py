@@ -361,7 +361,7 @@ async def conport_now(
                     {
                         "id": r["id"],
                         "timestamp": r["timestamp"],
-                        "status": r["status"],
+                        "status": (r["status"] or "UNKNOWN").upper(),
                         "description": r["description"],
                         "parent_id": r["parent_id"],
                     }
@@ -406,7 +406,11 @@ async def conport_dashboard(
         status_rows = await _fetchall(
             conn, "SELECT status, COUNT(*) AS count FROM progress_entries GROUP BY status"
         )
-        progress_rollup = {row["status"]: row["count"] for row in status_rows}
+        # Normalize status values to uppercase for consistent grouping (e.g., "in_progress" -> "IN_PROGRESS")
+        progress_rollup: dict[str, int] = {}
+        for row in status_rows:
+            normalized_status = (row["status"] or "UNKNOWN").upper()
+            progress_rollup[normalized_status] = progress_rollup.get(normalized_status, 0) + row["count"]
 
         link_count = await _fetchone(conn, "SELECT COUNT(*) AS count FROM context_links")
         decision_count = await _fetchone(conn, "SELECT COUNT(*) AS count FROM decisions")
@@ -554,7 +558,7 @@ async def conport_progress_list(
     """List progress entries (newest first), with optional filters.
 
     Filters:
-    - status: exact match
+    - status: case-insensitive exact match (e.g., "TODO", "todo", "In_Progress" all match)
     - parent_id: exact match
     - description_prefix: case-insensitive prefix match (e.g. "Phase 1:")
     """
@@ -564,7 +568,7 @@ async def conport_progress_list(
         params: list[Any] = []
 
         if status is not None and status != "":
-            where.append("status = ?")
+            where.append("LOWER(status) = LOWER(?)")
             params.append(status)
 
         if parent_id is not None:

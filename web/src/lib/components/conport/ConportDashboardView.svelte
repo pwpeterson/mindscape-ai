@@ -265,7 +265,8 @@
     type LaneStatus = "TODO" | "IN_PROGRESS" | "DONE";
 
     function normalizeLaneStatus(status: string): LaneStatus {
-        switch (status) {
+        const normalized = status.toUpperCase();
+        switch (normalized) {
             case "IN_PROGRESS":
                 return "IN_PROGRESS";
             case "DONE":

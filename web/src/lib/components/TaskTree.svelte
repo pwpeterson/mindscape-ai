@@ -8,7 +8,8 @@
 	}>();
 
 	function statusColor(status: string): string {
-		switch (status) {
+		const normalized = status.toUpperCase();
+		switch (normalized) {
 			case "IN_PROGRESS":
 				return "bg-emerald-400";
 			case "DONE":
@@ -34,7 +35,8 @@
 	}
 
 	function phaseMarker(status: string): string {
-		switch (status) {
+		const normalized = status.toUpperCase();
+		switch (normalized) {
 			case "IN_PROGRESS":
 				return "🟩";
 			case "DONE":
@@ -46,7 +48,8 @@
 	}
 
 	function phaseMarkerLabel(status: string): string {
-		switch (status) {
+		const normalized = status.toUpperCase();
+		switch (normalized) {
 			case "IN_PROGRESS":
 				return "Phase (In progress)";
 			case "DONE":
@@ -58,7 +61,10 @@
 	}
 
 	function getTitle(node: ProgressTreeNodeWithWbs): string {
-		return node.entry.wbs_meta?.title ?? stripPriorityPrefix(node.entry.description);
+		return (
+			node.entry.wbs_meta?.title ??
+			stripPriorityPrefix(node.entry.description)
+		);
 	}
 
 	function stripPriorityPrefix(description: string): string {
@@ -99,7 +105,7 @@
 		{@const entityType = node.entry.wbs_meta?.entity_type ?? "unknown"}
 		{@const isPhase = isPhaseNode(node)}
 		<li class="rounded-md border border-white/10 bg-black/10">
-			<details open={node.entry.status === "IN_PROGRESS"}>
+			<details open={node.entry.status.toUpperCase() === "IN_PROGRESS"}>
 				<summary class="cursor-pointer list-none select-none px-3 py-2">
 					<div class="flex items-start justify-between gap-3">
 						<div class="flex min-w-0 items-start gap-2">
@@ -111,9 +117,7 @@
 									>{phaseMarker(node.entry.status)}</span
 								>
 							{:else}
-								<span
-									class="mt-0.5 shrink-0"
-									title={entityType}
+								<span class="mt-0.5 shrink-0" title={entityType}
 									>{entityIcon(entityType)}</span
 								>
 							{/if}
