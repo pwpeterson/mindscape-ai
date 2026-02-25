@@ -21,6 +21,7 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 from typing import Any, Final
+from urllib.parse import urlparse, urlunparse
 
 
 class SupabaseUnavailableError(RuntimeError):
@@ -61,10 +62,10 @@ class SupabaseSettings:
 
     @staticmethod
     def from_env() -> SupabaseSettings:
-        url = _first_env(*SUPABASE_URL_ENV_KEYS)
+        url_raw = _first_env(*SUPABASE_URL_ENV_KEYS)
         key = _first_env(*SUPABASE_SERVICE_KEY_ENV_KEYS)
 
-        if not url:
+        if not url_raw:
             raise SupabaseUnavailableError(
                 "Supabase is not configured (missing SUPABASE_URL/SUPABASE_PUBLIC_URL)."
             )
@@ -73,7 +74,43 @@ class SupabaseSettings:
                 "Supabase is not configured (missing SUPABASE_SERVICE_ROLE_KEY/SERVICE_ROLE_KEY)."
             )
 
+        url = _normalize_supabase_url(url_raw)
+
         return SupabaseSettings(url=url, service_role_key=key)
+
+
+def _normalize_supabase_url(url: str) -> str:
+    """Normalize SUPABASE_URL to the *base* Supabase URL expected by supabase-py.
+
+    Common misconfigurations include setting SUPABASE_URL to a subpath like:
+    - http://localhost:8000/rest/v1
+    - http://localhost:8000/auth/v1
+
+    supabase-py expects the base (Kong) URL and appends service paths internally.
+    """
+    u = (url or "").strip()
+    if not u:
+        return u
+
+    parsed = urlparse(u)
+
+    # If it's not a normal URL, keep as-is and let downstream raise a helpful error.
+    if not parsed.scheme or not parsed.netloc:
+        return u.rstrip("/")
+
+    path = parsed.path or ""
+
+    # Trim at well-known Supabase service prefixes if present.
+    for marker in ("/rest/v1", "/auth/v1", "/storage/v1", "/functions/v1"):
+        idx = path.find(marker)
+        if idx != -1:
+            path = path[:idx]
+            break
+
+    path = path.rstrip("/")
+
+    normalized = urlunparse((parsed.scheme, parsed.netloc, path, "", "", ""))
+    return normalized.rstrip("/")
 
 
 def get_supabase_client() -> Any:

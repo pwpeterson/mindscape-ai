@@ -8,18 +8,9 @@ After=mindscape-ai-api.service
 [Container]
 Image=localhost/mindscape-ai-web:latest
 ContainerName=mindscape-ai-web
+Network=host
 
-# UI listens on 8012 in-container; publish to host 8012
-PublishPort=8012:8012
-
-# API routing strategy:
-# - Browser calls same-origin "/api/*" (no PUBLIC_MINDSCAPE_API_BASE), which is reverse-proxied by SvelteKit
-#   via [`handle()`](web/src/hooks.server.ts:23).
-# - SvelteKit server calls the API via this internal base.
-#   NOTE: In many Podman setups containers do not share DNS by name; host.containers.internal is reliable.
-Environment=MINDSCAPE_API_INTERNAL_BASE=http://host.containers.internal:8011
-
-# Optional: request timeout to prevent UI hangs when API is unreachable (used by the UI client helpers)
+Environment=MINDSCAPE_API_INTERNAL_BASE=http://127.0.0.1:8011
 Environment=PUBLIC_MINDSCAPE_API_TIMEOUT_MS=10000
 
 [Service]

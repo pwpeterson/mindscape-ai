@@ -47,6 +47,7 @@ Request drill-down (v1)
 
 from __future__ import annotations
 
+import os
 import re
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -133,13 +134,15 @@ class _SourceSpec:
     ts_col: str
     model_col: str
     provider_col: str
-    prompt_tokens_col: str
-    completion_tokens_col: str
-    total_cost_col: str
-    duration_ms_col: str
-    status_code_col: str
-    message_count_col: str
-    metadata_col: str
+
+    # optional metrics columns (vary by schema iteration)
+    prompt_tokens_col: str | None
+    completion_tokens_col: str | None
+    total_cost_col: str | None
+    duration_ms_col: str | None
+    status_code_col: str | None
+    message_count_col: str | None
+    metadata_col: str | None
 
     # optional filters
     app_id_col: str | None
@@ -147,6 +150,39 @@ class _SourceSpec:
 
     # optional identity columns (not guaranteed across schema iterations)
     request_id_col: str | None = None
+
+
+def _is_fastapi_style_not_found(exc: Exception) -> bool:
+    """Detect when SUPABASE_URL is pointing at a non-Supabase service.
+
+    Symptom we see in this project:
+    - supabase-py raises an error like "JSON could not be generated" with embedded
+      response bytes `b'{"detail":"Not Found"}'`.
+
+    That `{"detail":"Not Found"}` shape is typical of FastAPI/Starlette 404s, not
+    PostgREST errors. It usually means SUPABASE_URL is wrong (wrong host/port).
+    """
+    s = str(exc)
+    # Be permissive; error strings differ across supabase-py versions.
+    if "JSON could not be generated" not in s:
+        return False
+    return '"detail":"Not Found"' in s or "{'detail': 'Not Found'}" in s
+
+
+def _supabase_url_hint() -> str:
+    url = (
+        os.getenv("SUPABASE_URL")
+        or os.getenv("SUPABASE_PUBLIC_URL")
+        or os.getenv("API_EXTERNAL_URL")
+        or os.getenv("MINDSCAPE_SUPABASE_URL")
+        or ""
+    )
+    return (
+        "SUPABASE_URL appears to point at a non-Supabase service (FastAPI-style 404). "
+        "Context Metrics requires Supabase Kong/PostgREST (base URL, e.g. http://127.0.0.1:8100 "
+        "in your setup; sometimes :8000 in others), not model-proxy (often http://127.0.0.1:8002). "
+        f"Configured SUPABASE_URL={url!r}"
+    )
 
 
 def _detect_source(client: Any) -> _SourceSpec:
@@ -162,7 +198,9 @@ def _detect_source(client: Any) -> _SourceSpec:
         try:
             client.table(table).select(",".join(cols)).limit(1).execute()
             return True
-        except Exception:
+        except Exception as exc:
+            if _is_fastapi_style_not_found(exc):
+                raise HTTPException(status_code=503, detail=_supabase_url_hint()) from exc
             return False
 
     # Try new table first (but be defensive about column names).
@@ -250,13 +288,18 @@ def _detect_source(client: Any) -> _SourceSpec:
         )
     except HTTPException:
         raise
-    except Exception:
+    except Exception as exc:
+        if _is_fastapi_style_not_found(exc):
+            raise HTTPException(status_code=503, detail=_supabase_url_hint()) from exc
         pass
 
-    # Fall back to table used by existing Mindscape endpoints
+    # Fall back to table used by existing Mindscape endpoints (but detect column names).
+    table = "model_proxy_requests"
     try:
-        client.table("model_proxy_requests").select("id").limit(1).execute()
+        client.table(table).select("id").limit(1).execute()
     except Exception as exc:  # noqa: BLE001
+        if _is_fastapi_style_not_found(exc):
+            raise HTTPException(status_code=503, detail=_supabase_url_hint()) from exc
         raise HTTPException(
             status_code=503,
             detail=(
@@ -265,22 +308,60 @@ def _detect_source(client: Any) -> _SourceSpec:
             ),
         ) from exc
 
+    # Column candidates observed across model-proxy iterations (minimal vs older Mindscape).
+    ts_candidates = ["request_timestamp", "timestamp", "created_at"]
+    provider_candidates = ["provider_name", "provider"]
+    model_candidates = ["model", "model_name"]
+    prompt_tok_candidates = ["request_token_count", "input_tokens", "prompt_tokens"]
+    completion_tok_candidates = ["response_token_count", "output_tokens", "completion_tokens"]
+    cost_candidates = ["estimated_cost", "total_cost_usd", "total_cost", "cost_usd"]
+    duration_candidates = ["latency_ms", "duration_ms"]
+    status_candidates = ["status_code", "http_status", "status"]
+    msg_count_candidates = ["message_count", "messages_count"]
+    metadata_candidates = ["metadata", "meta"]
+
+    request_id_candidates = ["request_id", "id"]
+    app_id_candidates = ["app_id", "app"]
+    project_id_candidates = ["project_id", "project"]
+
+    def _pick_first(table: str, candidates: list[str]) -> str | None:
+        for c in candidates:
+            if _probe_select(table, [c]):
+                return c
+        return None
+
+    ts_col = _pick_first(table, ts_candidates) or "request_timestamp"
+    provider_col = _pick_first(table, provider_candidates) or "provider"
+    model_col = _pick_first(table, model_candidates) or "model"
+
+    prompt_tokens_col = _pick_first(table, prompt_tok_candidates)
+    completion_tokens_col = _pick_first(table, completion_tok_candidates)
+    total_cost_col = _pick_first(table, cost_candidates)
+    duration_ms_col = _pick_first(table, duration_candidates)
+    status_code_col = _pick_first(table, status_candidates)
+    message_count_col = _pick_first(table, msg_count_candidates)
+    metadata_col = _pick_first(table, metadata_candidates)
+
+    request_id_col = _pick_first(table, request_id_candidates)
+    app_id_col = _pick_first(table, app_id_candidates)
+    project_id_col = _pick_first(table, project_id_candidates)
+
     return _SourceSpec(
         kind="requests",
-        table="model_proxy_requests",
-        ts_col="request_timestamp",
-        model_col="model",
-        provider_col="provider_name",
-        prompt_tokens_col="input_tokens",
-        completion_tokens_col="output_tokens",
-        total_cost_col="estimated_cost",
-        duration_ms_col="latency_ms",
-        status_code_col="status_code",
-        message_count_col="message_count",
-        metadata_col="metadata",
-        app_id_col="app_id",  # varchar in this schema
-        project_id_col="project_id",
-        request_id_col="request_id",
+        table=table,
+        ts_col=ts_col,
+        model_col=model_col,
+        provider_col=provider_col,
+        prompt_tokens_col=prompt_tokens_col,
+        completion_tokens_col=completion_tokens_col,
+        total_cost_col=total_cost_col,  # may be None in minimal schema
+        duration_ms_col=duration_ms_col,
+        status_code_col=status_code_col,
+        message_count_col=message_count_col,
+        metadata_col=metadata_col,
+        app_id_col=app_id_col,
+        project_id_col=project_id_col,
+        request_id_col=request_id_col,
     )
 
 
@@ -414,10 +495,9 @@ def _fetch_rows(
     limit: int,
 ) -> list[dict[str, Any]]:
     # Keep selects minimal; we do aggregation in Python.
-    cols: list[str] = [
-        src.ts_col,
-        src.model_col,
-        src.provider_col,
+    cols: list[str] = [src.ts_col, src.model_col, src.provider_col]
+
+    for c in (
         src.prompt_tokens_col,
         src.completion_tokens_col,
         src.total_cost_col,
@@ -425,7 +505,9 @@ def _fetch_rows(
         src.status_code_col,
         src.message_count_col,
         src.metadata_col,
-    ]
+    ):
+        if c is not None:
+            cols.append(c)
 
     # Identity columns are not guaranteed across schema iterations; only select if detected.
     if src.request_id_col:
@@ -506,133 +588,102 @@ async def condensation_roi(
     since_days: int = Query(default=7, ge=1, le=MAX_DAYS),
     max_rows: int = Query(default=10_000, ge=100, le=MAX_ROWS_PER_QUERY),
 ) -> dict[str, Any]:
-    """Condensation ROI summary for the minimal request-context schema.
+    """Condensation ROI summary.
 
-    Uses:
-    - public.model_proxy_requests (request_id, request_timestamp, provider, model, app_id, ...)
-    - public.model_proxy_request_contexts (raw/condensed token counts + tokens_saved)
+    This endpoint must tolerate multiple model-proxy schema iterations.
+
+    Data sources (best-effort):
+    - Requests: auto-detected via [`_detect_source()`](src/mindscape_ai/api/routes/context_metrics.py:152)
+      - public.model_proxy_api_requests (newer)
+      - public.model_proxy_requests (older)
+    - Condensation details: if `model_proxy_request_contexts` is present, join on request_id.
+      Otherwise, attempt to read condensation hints from the request metadata JSON.
 
     Notes:
-    - This minimal schema does not store per-request cost, so total_cost_usd is null.
-    - estimated_savings_usd uses the same rough $0.000005/token heuristic as the prior version.
+    - `estimated_savings_usd` is a heuristic based on saved tokens.
     """
     _validate_app_id(app_id)
     _validate_provider(provider)
     _validate_model(model)
     if project_id is not None:
-        # The minimal schema does not have project_id, but keep this param for API stability.
         _validate_len("project_id", project_id, 255)
 
     client = _get_client_or_503()
+    src = _detect_source(client)
+
+    since_dt = _utc_now() - timedelta(days=int(since_days))
 
     # ---- Step 1: fetch recent requests in scope (cap by max_rows) ----
-    since_dt = _utc_now() - timedelta(days=int(since_days))
-    since_iso = _iso(since_dt)
+    request_rows = _fetch_rows(
+        client=client,
+        src=src,
+        since_dt=since_dt,
+        app_id=app_id,
+        project_id=project_id,
+        provider=provider,
+        model=model,
+        limit=int(max_rows),
+    )
 
-    try:
-        q = (
-            client.table("model_proxy_requests")
-            .select("request_id,request_timestamp,provider,model,app_id")
-            .gte("request_timestamp", since_iso)
-            .order("request_timestamp", desc=True)
-            .limit(int(max_rows))
-        )
+    total_requests = len(request_rows)
 
-        if app_id is not None:
-            q = q.eq("app_id", app_id)
-        if provider is not None:
-            q = q.eq("provider", provider)
-        if model is not None:
-            q = q.eq("model", model)
-
-        req_resp = q.execute()
-    except httpx.HTTPError as exc:
-        raise HTTPException(
-            status_code=503,
-            detail="Supabase is unreachable (context ROI).",
-        ) from exc
-    except Exception as exc:  # noqa: BLE001
-        raise HTTPException(
-            status_code=500, detail=f"Failed to query model_proxy_requests (ROI): {exc}"
-        ) from exc
-
-    req_data = getattr(req_resp, "data", None)
-    if not isinstance(req_data, list):
-        raise HTTPException(
-            status_code=500, detail="Unexpected response from Supabase (model_proxy_requests)"
-        )
-
+    # Collect request_ids for optional join to contexts table (if possible).
     request_ids: list[str] = []
-    for r in req_data:
-        if isinstance(r, dict):
-            rid = r.get("request_id")
-            if isinstance(rid, str) and rid.strip():
-                request_ids.append(rid.strip())
+    if src.request_id_col is not None:
+        for r in request_rows:
+            rid = r.get(src.request_id_col)
+            if rid is None:
+                continue
+            s = str(rid).strip()
+            if s:
+                request_ids.append(s)
 
-    total_requests = len(request_ids)
-    if total_requests == 0:
-        return {
-            "filters": {
-                "app_id": app_id,
-                "project_id": project_id,
-                "provider": provider,
-                "model": model,
-                "since_days": since_days,
-                "max_rows": max_rows,
-            },
-            "source": {
-                "type": "supabase",
-                "table": "model_proxy_requests+model_proxy_request_contexts",
-            },
-            "stats": {
-                "total_requests": 0,
-                "condensed_requests": 0,
-                "condensation_rate_pct": None,
-                "avg_tokens_condensed": None,
-                "avg_tokens_not_condensed": None,
-                "avg_tokens_saved_per_request": None,
-                "token_reduction_pct": None,
-                "total_cost_usd": None,
-                "estimated_savings_usd": None,
-            },
-            "notes": {"cost_available": False},
-        }
+    # Dedupe while preserving order.
+    request_ids = list(dict.fromkeys(request_ids))
 
-    # ---- Step 2: fetch contexts for those request_ids (chunked) ----
-    def _chunks(items: list[str], size: int) -> list[list[str]]:
-        out: list[list[str]] = []
-        for i in range(0, len(items), size):
-            out.append(items[i : i + size])
-        return out
-
-    context_rows: list[dict[str, Any]] = []
-    for chunk in _chunks(request_ids, 200):
+    # Cost is available only if a cost column exists.
+    total_cost_usd = None
+    if src.total_cost_col is not None:
         try:
-            ctx_resp = (
-                client.table("model_proxy_request_contexts")
-                .select(
-                    ",".join(
-                        [
-                            "request_id",
-                            "raw_context_token_count",
-                            "condensed_context_token_count",
-                            "tokens_saved",
-                        ]
-                    )
-                )
-                .in_("request_id", chunk)
-                .execute()
-            )
+            total_cost_usd = sum(_safe_float(r.get(src.total_cost_col)) for r in request_rows)
         except Exception:
-            continue
+            total_cost_usd = None
 
-        ctx_data = getattr(ctx_resp, "data", None)
-        if isinstance(ctx_data, list):
-            for r in ctx_data:
-                if isinstance(r, dict):
-                    context_rows.append(r)
+    # ---- Step 2: fetch contexts for those request_ids (if contexts table exists) ----
+    def _chunks(items: list[str], size: int) -> list[list[str]]:
+        return [items[i : i + size] for i in range(0, len(items), size)]
 
-    # Compute ROI metrics from contexts table.
+    context_table = _pick_first_available_object(client, ["model_proxy_request_contexts"])
+    context_rows: list[dict[str, Any]] = []
+
+    if context_table is not None and request_ids:
+        for chunk in _chunks(request_ids, 200):
+            try:
+                ctx_resp = (
+                    client.table(context_table)
+                    .select(
+                        ",".join(
+                            [
+                                "request_id",
+                                "raw_context_token_count",
+                                "condensed_context_token_count",
+                                "tokens_saved",
+                            ]
+                        )
+                    )
+                    .in_("request_id", chunk)
+                    .execute()
+                )
+            except Exception:
+                continue
+
+            ctx_data = getattr(ctx_resp, "data", None)
+            if isinstance(ctx_data, list):
+                for r in ctx_data:
+                    if isinstance(r, dict):
+                        context_rows.append(r)
+
+    # Compute ROI metrics from either contexts table or request metadata.
     condensed_requests = 0
 
     raw_tok_sum = 0
@@ -644,24 +695,52 @@ async def condensation_roi(
     tokens_saved_sum = 0
     tokens_saved_n = 0
 
-    for r in context_rows:
-        raw_tok = _meta_int(r, "raw_context_token_count")
-        condensed_tok = _meta_int(r, "condensed_context_token_count")
-        saved = _meta_int(r, "tokens_saved")
+    condensation_source: str | None = None
 
-        # Count as "condensed row" if we have both token counts OR saved tokens.
-        if raw_tok is not None or condensed_tok is not None or saved is not None:
-            condensed_requests += 1
+    if context_rows:
+        condensation_source = "model_proxy_request_contexts"
+        for r in context_rows:
+            raw_tok = _meta_int(r, "raw_context_token_count")
+            condensed_tok = _meta_int(r, "condensed_context_token_count")
+            saved = _meta_int(r, "tokens_saved")
 
-        if raw_tok is not None:
-            raw_tok_sum += raw_tok
-            raw_tok_n += 1
-        if condensed_tok is not None:
-            condensed_tok_sum += condensed_tok
-            condensed_tok_n += 1
-        if saved is not None:
-            tokens_saved_sum += saved
-            tokens_saved_n += 1
+            if raw_tok is not None or condensed_tok is not None or saved is not None:
+                condensed_requests += 1
+
+            if raw_tok is not None:
+                raw_tok_sum += raw_tok
+                raw_tok_n += 1
+            if condensed_tok is not None:
+                condensed_tok_sum += condensed_tok
+                condensed_tok_n += 1
+            if saved is not None:
+                tokens_saved_sum += saved
+                tokens_saved_n += 1
+    else:
+        # Fall back to request metadata hints (schema-dependent; best-effort).
+        condensation_source = "request_metadata"
+        for r in request_rows:
+            meta = r.get(src.metadata_col) if src.metadata_col is not None else None
+            raw_tok = _meta_int(meta, "raw_context_token_count")
+            condensed_tok = _meta_int(meta, "condensed_context_token_count")
+            saved = _meta_int(meta, "tokens_saved")
+
+            condensed_flag = _meta_bool(meta, "context_condensed")
+            if raw_tok is not None or condensed_tok is not None or saved is not None:
+                condensed_flag = True
+
+            if condensed_flag:
+                condensed_requests += 1
+
+            if raw_tok is not None:
+                raw_tok_sum += raw_tok
+                raw_tok_n += 1
+            if condensed_tok is not None:
+                condensed_tok_sum += condensed_tok
+                condensed_tok_n += 1
+            if saved is not None:
+                tokens_saved_sum += saved
+                tokens_saved_n += 1
 
     avg_raw = (raw_tok_sum / raw_tok_n) if raw_tok_n else None
     avg_condensed = (condensed_tok_sum / condensed_tok_n) if condensed_tok_n else None
@@ -690,7 +769,8 @@ async def condensation_roi(
         },
         "source": {
             "type": "supabase",
-            "table": "model_proxy_requests+model_proxy_request_contexts",
+            "requests_table": src.table,
+            "contexts_table": context_table,
         },
         "stats": {
             "total_requests": total_requests,
@@ -704,12 +784,16 @@ async def condensation_roi(
             "token_reduction_pct": None
             if token_reduction_pct is None
             else round(token_reduction_pct, 1),
-            "total_cost_usd": None,
+            "total_cost_usd": None if total_cost_usd is None else round(total_cost_usd, 6),
             "estimated_savings_usd": None
             if estimated_savings_usd is None
             else round(estimated_savings_usd, 4),
         },
-        "notes": {"cost_available": False},
+        "notes": {
+            "schema_kind": src.kind,
+            "condensation_source": condensation_source,
+            "cost_available": total_cost_usd is not None,
+        },
     }
 
 
