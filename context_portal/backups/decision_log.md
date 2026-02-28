@@ -2,6 +2,54 @@
 
 ---
 ## Decision
+*   [2026-02-28 19:51:35] Resolved ConPort panel display issue for model-proxy app
+
+## Rationale
+*   User reported that newly added LiteLLM migration phases (IDs 94-100) were not displaying in the ConPort panel, despite being present in the database. Investigation revealed the data was correctly stored and the API was returning it properly, but the browser was showing cached data.
+
+## Implementation Details
+*   Diagnostic process:
+1. Verified database contained all 100 progress entries including new phases (IDs 94-100)
+2. Confirmed API on port 8011 correctly returns phases with description_prefix=Phase filter
+3. Verified web UI configuration: port 8012 (web) proxies to port 8011 (API)
+4. Tested API endpoints directly - all working correctly
+5. Root cause: Browser cache preventing display of new data
+6. Solution: Clear browser cache/storage or use incognito mode
+
+Key findings:
+- Database: ✅ 100 entries, 10 phases with WBS metadata
+- API: ✅ Returns all 7 LiteLLM phases (94-100) correctly
+- Configuration: ✅ Correct ports and app_id parameter
+- Issue: Browser-side caching
+
+Created diagnostic scripts: check_conport_data.py, test_conport_api.py, debug_dashboard_api.md
+
+---
+## Decision
+*   [2026-02-17 01:46:26] MCP ConPort integration test completed successfully
+
+## Rationale
+*   Verified that ConPort MCP tools (log_progress, log_decision, update_product_context) are functioning correctly via the MCP server interface
+
+## Implementation Details
+*   Successfully called log_progress with parent-child relationship (id 39 -> id 40). MCP server is operational and ready for production use.
+
+---
+## Decision
+*   [2026-02-06 02:22:22] Implemented WBS v1 schema with project root for snapmail
+
+## Rationale
+*   Following WBS v1 schema which requires project > phase > task hierarchy. Created project entry (ID 34) with entity_type='project' and linked existing phases (4, 15, 27) as children. This enables proper plan root detection in dashboard.
+
+## Implementation Details
+*   1) Created progress entry '[Plan] Snapmail' (ID 34) with parent_id=null
+2) Added WBS metadata: entity_type='project', title='Snapmail', priority=P0, order=0
+3) Updated phases 4, 15, 27 to have parent_id=34
+4) Fixed frontend bug where phases were incorrectly assigned as their own parent during 'attached notes' processing
+5) Deleted stray entry ID 39 from mindscape-ai database
+
+---
+## Decision
 *   [2026-01-30 22:21:28] Rename MCP tool names to remove '.' (use underscore names)
 
 ## Rationale

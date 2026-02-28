@@ -37,5 +37,20 @@ docs/scaffolding phase
 {'bootstrapped_at_utc': '2026-01-08T21:41:48.215Z', 'bootstrap_method': 'Derived from README.md and docs/projectPRD.MD (projectBrief.md not found in workspace root).'}
 
 ## Wbs Schema
-{'version': '1.0', 'entity_types': ['project', 'phase', 'task'], 'required_fields': ['entity_type', 'title'], 'optional_fields': ['owner', 'priority', 'tags', 'estimate_points', 'due_date', 'order', 'external_refs'], 'allowed_statuses': ['TODO', 'IN_PROGRESS', 'DONE'], 'priority_values': ['P0', 'P1', 'P2', 'P3'], 'notes': "One app per workspace. Use progress_entries for hierarchy (parent_id). Store metadata in custom_data category 'wbs_meta' keyed by 'progress:<ID>'."}
+{'project_root': {'id': 34, 'entity_type': 'project', 'title': 'Snapmail'}, 'phases': [{'id': 4, 'title': 'Phase 1: Prototype Development', 'weeks': '1-6'}, {'id': 15, 'title': 'Phase 2: Backend & Integration', 'weeks': '7-14'}, {'id': 27, 'title': 'Phase 3: Mobile Application', 'weeks': '15-22'}], 'notes': 'All phases now properly nested under project root per WBS v1.0 schema'}
+
+## Last Mcp Test
+2026-02-17T01:48:00Z
+
+## Mcp Tools Status
+{'log_progress': 'working', 'log_decision': 'working', 'update_product_context': 'working'}
+
+## Known Issues
+{'browser_cache': 'ConPort panel may show stale data due to browser caching. Solution: Clear browser cache/storage or use incognito mode for testing. The API correctly returns data but browsers may cache responses.'}
+
+## Troubleshooting Tips
+{'conport_not_updating': "If ConPort panel doesn't show new data: 1) Verify data in database directly, 2) Test API endpoints with curl, 3) Check browser DevTools Network tab for API responses, 4) Clear browser cache or use incognito mode, 5) Verify correct app_id parameter in URL"}
+
+## Diagnostic Tools
+{'check_conport_data': 'Python script to verify ConPort database contents and WBS metadata', 'test_conport_api': 'Python script to simulate API queries and verify responses', 'debug_dashboard_api': 'Markdown guide for debugging ConPort dashboard API calls in browser'}
 

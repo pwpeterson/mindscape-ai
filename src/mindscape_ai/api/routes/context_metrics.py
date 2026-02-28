@@ -1624,6 +1624,7 @@ async def request_lookup(
                             "app_id",
                             "request_token_count",
                             "response_token_count",
+                            "prompt_char_count",
                         ]
                     )
                 )
@@ -1677,6 +1678,9 @@ async def request_lookup(
                 "app_id": req.get("app_id"),
                 "request_token_count": _safe_int(req.get("request_token_count")),
                 "response_token_count": _safe_int(req.get("response_token_count")),
+                "prompt_char_count": _safe_int(req.get("prompt_char_count"))
+                if req.get("prompt_char_count") is not None
+                else None,
                 "raw_context_token_count": _safe_int(c.get("raw_context_token_count"))
                 if c.get("raw_context_token_count") is not None
                 else None,

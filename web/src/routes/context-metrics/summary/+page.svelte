@@ -248,7 +248,7 @@
     <title>Context Metrics — Summary</title>
 </svelte:head>
 
-<section class="card">
+<section class="card" style="width: 110%; max-width: 110%;">
     <h2 class="card-title">Filters</h2>
 
     <div class="mt-2 text-sm text-gray-200">
@@ -363,7 +363,7 @@
     {/if}
 </section>
 
-<section class="card mt-6">
+<section class="card mt-6" style="width: 110%; max-width: 110%;">
     <h2 class="card-title">Condensation ROI (summary)</h2>
 
     <div class="mt-4 grid gap-3 md:grid-cols-4">
@@ -431,7 +431,7 @@
     </div>
 </section>
 
-<section class="card mt-6">
+<section class="card mt-6" style="width: 110%; max-width: 110%;">
     <h2 class="card-title">Context Metrics (per-request drill-down)</h2>
 
     <div class="mt-2 text-sm text-gray-200">
@@ -490,8 +490,9 @@
                     <th class="px-3 py-2">Inserted</th>
                     <th class="px-3 py-2">Provider</th>
                     <th class="px-3 py-2">Model</th>
-                    <th class="px-3 py-2">Raw tok</th>
-                    <th class="px-3 py-2">Condensed tok</th>
+                    <th class="px-3 py-2">Prompt Char Count</th>
+                    <th class="px-3 py-2">Raw Tokens</th>
+                    <th class="px-3 py-2">Condensed Tokens</th>
                     <th class="px-3 py-2">Saved</th>
                     <th class="px-3 py-2">Status</th>
                 </tr>
@@ -499,7 +500,7 @@
             <tbody>
                 {#if !requestLookupLoading && requestLookupRows.length === 0}
                     <tr class="border-t border-white/10">
-                        <td class="px-3 py-2 text-gray-300" colspan="8">
+                        <td class="px-3 py-2 text-gray-300" colspan="9">
                             No requests found for this scope/time window.
                         </td>
                     </tr>
@@ -538,6 +539,9 @@
                                 {r.model ?? "—"}
                             </td>
                             <td class="px-3 py-2 font-mono">
+                                {fmtInt(r.prompt_char_count ?? null)}
+                            </td>
+                            <td class="px-3 py-2 font-mono">
                                 {fmtInt(r.raw_context_token_count ?? null)}
                             </td>
                             <td class="px-3 py-2 font-mono">
@@ -555,7 +559,7 @@
 
                         {#if expandedRowKey === rowKey(r)}
                             <tr class="border-t border-white/10">
-                                <td class="px-3 py-3" colspan="8">
+                                <td class="px-3 py-3" colspan="9">
                                     {#if requestDetailsLoading && selectedRowKey === rowKey(r)}
                                         <div class="text-sm text-gray-200">
                                             Loading…

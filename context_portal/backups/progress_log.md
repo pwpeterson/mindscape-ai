@@ -1,6 +1,8 @@
 # Progress Log
 
 ## Completed Tasks
+*   [2026-02-17 01:48:37] Testing ConPort MCP tools - log_progress, log_decision, and update_product_context
+*   [2026-02-17 01:46:18] MCP ConPort tools tested successfully
 *   [2026-01-22 23:32:00] Improved Progress page UX: hide project board when status filter active, standardized button styling
 *   [2026-01-22 23:31:43] Fixed app_id parameter propagation in web UI components (ConportNowView, Progress page, Item page, Dashboard view)
 *   [2026-01-22 19:18:57] WBS v1.0 Schema Implementation & Migration Complete
@@ -73,6 +75,7 @@ DONE (2026-01-13):
 *   [2026-01-11 23:01:14] [P3] Expose Mindscape-AI aggregated view as an MCP server — DONE (2026-01-13): added local stdio FastMCP server in `mindscape_ai.mcp_server` exposing conport.now/search, mem0.search, prompts.files, tokens.breakdown and resources conport://now + tokens://breakdown; validated via pytest.
 
 ## In Progress Tasks
+*   [2026-02-17 01:42:33] Testing ConPort MCP tools integration - log_progress, log_decision, and update_product_context
 *   [2026-01-11 23:01:14] [PLAN] Mindscape-AI project plan (derived from README + PRD v1.0.0)
 
 ## TODO Tasks

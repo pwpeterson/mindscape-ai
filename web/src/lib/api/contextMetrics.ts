@@ -39,6 +39,7 @@ export type ContextMetricsRequestLookupRow = {
     // Minimal schema (context size)
     raw_context_chars?: number | null;
     condensed_context_chars?: number | null;
+    prompt_char_count?: number | null;
 
     // Minimal schema (condensation metadata)
     condensation_method?: string | null;
