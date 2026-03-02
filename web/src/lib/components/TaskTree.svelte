@@ -21,14 +21,16 @@
 		}
 	}
 
-	function entityIcon(type: string): string {
+	function entityIcon(type: string, status: string): string {
+		const normalizedStatus = status.toUpperCase();
 		switch (type) {
 			case "project":
 				return "📦";
 			case "phase":
 				return "📋";
 			case "task":
-				return "✓";
+				// DONE: gray X, TODO: blue check, IN_PROGRESS: green check
+				return normalizedStatus === "DONE" ? "X" : "✓";
 			default:
 				return "•";
 		}
@@ -117,8 +119,22 @@
 									>{phaseMarker(node.entry.status)}</span
 								>
 							{:else}
-								<span class="mt-0.5 shrink-0" title={entityType}
-									>{entityIcon(entityType)}</span
+								<span
+									class="mt-0.5 shrink-0"
+									title={entityType}
+									style={`color: ${
+										node.entry.status.toUpperCase() ===
+										"DONE"
+											? "rgba(156,163,175,0.9)"
+											: node.entry.status.toUpperCase() ===
+												  "TODO"
+												? "rgb(59,130,246)"
+												: "rgb(34,197,94)"
+									};`}
+									>{entityIcon(
+										entityType,
+										node.entry.status,
+									)}</span
 								>
 							{/if}
 							<div class="min-w-0">

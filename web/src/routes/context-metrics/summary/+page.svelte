@@ -493,6 +493,7 @@
                     <th class="px-3 py-2">Prompt Char Count</th>
                     <th class="px-3 py-2">Raw Tokens</th>
                     <th class="px-3 py-2">Condensed Tokens</th>
+                    <th class="px-3 py-2">Estimated Cost</th>
                     <th class="px-3 py-2">Saved</th>
                     <th class="px-3 py-2">Status</th>
                 </tr>
@@ -500,7 +501,7 @@
             <tbody>
                 {#if !requestLookupLoading && requestLookupRows.length === 0}
                     <tr class="border-t border-white/10">
-                        <td class="px-3 py-2 text-gray-300" colspan="9">
+                        <td class="px-3 py-2 text-gray-300" colspan="10">
                             No requests found for this scope/time window.
                         </td>
                     </tr>
@@ -550,6 +551,9 @@
                                 )}
                             </td>
                             <td class="px-3 py-2 font-mono">
+                                {fmtUsd(r.estimated_cost ?? null)}
+                            </td>
+                            <td class="px-3 py-2 font-mono">
                                 {fmtInt(r.tokens_saved ?? null)}
                             </td>
                             <td class="px-3 py-2 font-mono">
@@ -559,7 +563,7 @@
 
                         {#if expandedRowKey === rowKey(r)}
                             <tr class="border-t border-white/10">
-                                <td class="px-3 py-3" colspan="9">
+                                <td class="px-3 py-3" colspan="10">
                                     {#if requestDetailsLoading && selectedRowKey === rowKey(r)}
                                         <div class="text-sm text-gray-200">
                                             Loading…

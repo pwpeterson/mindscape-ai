@@ -83,14 +83,17 @@
 
     function entityIcon(
         type: "project" | "phase" | "task" | "unknown",
+        statusValue: string,
     ): string {
+        const normalizedStatus = statusValue.toUpperCase();
         switch (type) {
             case "project":
                 return "📦";
             case "phase":
                 return "📋";
             case "task":
-                return "✓";
+                // DONE: gray X, TODO: blue check, IN_PROGRESS: green check
+                return normalizedStatus === "DONE" ? "X" : "✓";
             default:
                 return "•";
         }
@@ -609,7 +612,21 @@
                                                 {#if entityType === "phase"}
                                                     {phaseMarker(e.status)}
                                                 {:else}
-                                                    {entityIcon(entityType)}
+                                                    <span
+                                                        style={`color: ${
+                                                            e.status.toUpperCase() ===
+                                                            "DONE"
+                                                                ? "rgba(156,163,175,0.9)"
+                                                                : e.status.toUpperCase() ===
+                                                                    "TODO"
+                                                                  ? "rgb(59,130,246)"
+                                                                  : "rgb(34,197,94)"
+                                                        };`}
+                                                        >{entityIcon(
+                                                            entityType,
+                                                            e.status,
+                                                        )}</span
+                                                    >
                                                 {/if}
                                             </span>
                                             <div style="min-w-0; flex: 1;">
@@ -707,7 +724,21 @@
                                         {#if entityType === "phase"}
                                             {phaseMarker(e.status)}
                                         {:else}
-                                            {entityIcon(entityType)}
+                                            <span
+                                                style={`color: ${
+                                                    e.status.toUpperCase() ===
+                                                    "DONE"
+                                                        ? "rgba(156,163,175,0.9)"
+                                                        : e.status.toUpperCase() ===
+                                                            "TODO"
+                                                          ? "rgb(59,130,246)"
+                                                          : "rgb(34,197,94)"
+                                                };`}
+                                                >{entityIcon(
+                                                    entityType,
+                                                    e.status,
+                                                )}</span
+                                            >
                                         {/if}
                                     </span>
                                     <a

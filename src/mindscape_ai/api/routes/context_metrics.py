@@ -1625,6 +1625,7 @@ async def request_lookup(
                             "request_token_count",
                             "response_token_count",
                             "prompt_char_count",
+                            "estimated_cost",
                         ]
                     )
                 )
@@ -1686,6 +1687,9 @@ async def request_lookup(
                 else None,
                 "condensed_context_token_count": _safe_int(c.get("condensed_context_token_count"))
                 if c.get("condensed_context_token_count") is not None
+                else None,
+                "estimated_cost": _safe_float(req.get("estimated_cost"))
+                if req.get("estimated_cost") is not None
                 else None,
                 "tokens_saved": _safe_int(c.get("tokens_saved"))
                 if c.get("tokens_saved") is not None

@@ -46,8 +46,9 @@ export type ContextMetricsRequestLookupRow = {
     condensation_version?: string | null;
     condensation_trigger?: string | null;
 
-    // Cost not available in minimal schema
+    // Cost fields
     total_cost_usd: number | null;
+    estimated_cost?: number | null;
 
     duration_ms: number;
     status_code: number | null;

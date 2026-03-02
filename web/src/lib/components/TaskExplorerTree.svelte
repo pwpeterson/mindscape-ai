@@ -33,14 +33,16 @@
 		}
 	}
 
-	function entityIcon(type: string): string {
+	function entityIcon(type: string, status: string): string {
+		const normalizedStatus = status.toUpperCase();
 		switch (type) {
 			case "project":
 				return "📦";
 			case "phase":
 				return "📋";
 			case "task":
-				return "✓";
+				// DONE: gray X, TODO: blue check, IN_PROGRESS: green check
+				return normalizedStatus === "DONE" ? "X" : "✓";
 			default:
 				return "•";
 		}
@@ -77,7 +79,10 @@
 	}
 
 	function getTitle(node: ProgressTreeNodeWithWbs): string {
-		return node.entry.wbs_meta?.title ?? stripPriorityPrefix(node.entry.description);
+		return (
+			node.entry.wbs_meta?.title ??
+			stripPriorityPrefix(node.entry.description)
+		);
 	}
 
 	function stripPriorityPrefix(description: string): string {
@@ -145,7 +150,9 @@
 		return showIdPrefix ? `${idPrefix(node.entry.id)} ` : "";
 	}
 
-	function collectAggregatedNotes(node: ProgressTreeNodeWithWbs): AggregatedNote[] {
+	function collectAggregatedNotes(
+		node: ProgressTreeNodeWithWbs,
+	): AggregatedNote[] {
 		const out: AggregatedNote[] = [];
 		const inline = splitDescription(node.entry.description);
 		const title = getTitle(node);
@@ -257,8 +264,7 @@
 					open={isPhase
 						? getPhaseOpen(node.entry.id, level < 1)
 						: level < 1}
-					ontoggle={(e) =>
-						isPhase && onPhaseToggle(node.entry.id, e)}
+					ontoggle={(e) => isPhase && onPhaseToggle(node.entry.id, e)}
 				>
 					<summary
 						class="flex items-center gap-2 rounded-md py-1 pr-2 text-sm text-gray-100 hover:bg-white/5"
@@ -275,7 +281,18 @@
 							<span
 								class="shrink-0"
 								title={entityType}
-								>{entityIcon(entityType)}</span
+								style={`color: ${
+									node.entry.status.toUpperCase() === "DONE"
+										? "rgba(156,163,175,0.9)"
+										: node.entry.status.toUpperCase() ===
+											  "TODO"
+											? "rgb(59,130,246)"
+											: "rgb(34,197,94)"
+								};`}
+								>{entityIcon(
+									entityType,
+									node.entry.status,
+								)}</span
 							>
 						{/if}
 						<a
@@ -283,7 +300,9 @@
 							class="min-w-0 truncate hover:underline underline-offset-4 decoration-white/20 hover:decoration-white/60"
 							onclick={(e) => e.stopPropagation()}
 						>
-							{showIdPrefix ? `${idPrefix(node.entry.id)} ` : ""}{title}
+							{showIdPrefix
+								? `${idPrefix(node.entry.id)} `
+								: ""}{title}
 						</a>
 						{#if node.entry.wbs_meta?.priority}
 							<span class="ml-1 text-xs opacity-60">
@@ -365,7 +384,9 @@
 								class="min-w-0 truncate hover:underline underline-offset-4 decoration-white/20 hover:decoration-white/60"
 								onclick={(e) => e.stopPropagation()}
 							>
-								{showIdPrefix ? `${idPrefix(node.entry.id)} ` : ""}{title}
+								{showIdPrefix
+									? `${idPrefix(node.entry.id)} `
+									: ""}{title}
 							</a>
 							{#if node.entry.wbs_meta?.priority}
 								<span class="ml-1 text-xs opacity-60">
@@ -384,13 +405,22 @@
 						<span
 							class="shrink-0"
 							title={entityType}
-							>{entityIcon(entityType)}</span
+							style={`color: ${
+								node.entry.status.toUpperCase() === "DONE"
+									? "rgba(156,163,175,0.9)"
+									: node.entry.status.toUpperCase() === "TODO"
+										? "rgb(59,130,246)"
+										: "rgb(34,197,94)"
+							};`}
+							>{entityIcon(entityType, node.entry.status)}</span
 						>
 						<a
 							href={itemHref(node.entry.id)}
 							class="min-w-0 truncate hover:underline underline-offset-4 decoration-white/20 hover:decoration-white/60"
 						>
-							{showIdPrefix ? `${idPrefix(node.entry.id)} ` : ""}{title}
+							{showIdPrefix
+								? `${idPrefix(node.entry.id)} `
+								: ""}{title}
 						</a>
 						{#if node.entry.wbs_meta?.priority}
 							<span class="ml-1 text-xs opacity-60">
